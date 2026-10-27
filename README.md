@@ -47,23 +47,21 @@ In **Workers → Add worker**, the hub creates a worker token and a ready-to-run
 docker run -d --name chiperka-worker --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -e CHIPERKA_WORKER_TOKEN=spt_… \
-  <chiperka-worker image> --api https://chiperka.example.com
+  finie/chiperka-worker --api https://chiperka.example.com
 ```
 
 Notes:
 
-- Set `CHIPERKA_WORKER_IMAGE` on the hub so the generated command contains the right worker image.
 - Workers must be able to pull the service images your tests use.
 - Run one worker per Docker daemon.
 
 ### Embedded worker
 
-To run tests on the same machine as the hub, build the image with the worker bundled. Then enable the worker and mount the Docker socket:
+The image bundles [chiperka-worker](https://github.com/chiperka/worker). To run tests on the same machine as the hub, enable it and mount the Docker socket:
 
 ```bash
-docker build --target hub-with-worker --build-arg WORKER_IMAGE=<chiperka-worker image> -t chiperka-hub .
 docker run -d -p 8080:8080 -v chiperka-hub:/data -v /var/run/docker.sock:/var/run/docker.sock \
-  -e CHIPERKA_LOCAL_WORKER=1 chiperka-hub
+  -e CHIPERKA_LOCAL_WORKER=1 finie/chiperka-hub
 ```
 
 When running the binary directly, put `chiperka-worker` on `PATH`, or point `CHIPERKA_WORKER_BIN` at it.
@@ -77,7 +75,7 @@ When running the binary directly, put `chiperka-worker` on `PATH`, or point `CHI
 | `CHIPERKA_PUBLIC_URL` | derived from the request | External URL used in CLI/worker instructions |
 | `CHIPERKA_AUTH` | `enabled` | `disabled` = no login and no API token needed (worker tokens are still required) |
 | `CHIPERKA_ADMIN_EMAIL`, `CHIPERKA_ADMIN_PASSWORD` | – | Bootstrap admin when no user exists |
-| `CHIPERKA_WORKER_IMAGE` | – | Worker image shown in "Add worker" commands |
+| `CHIPERKA_WORKER_IMAGE` | `finie/chiperka-worker:latest` | Worker image shown in "Add worker" commands |
 | `CHIPERKA_LOCAL_WORKER` | `0` | `1` = supervise an embedded `chiperka-worker` |
 | `CHIPERKA_LOCAL_WORKER_CONCURRENCY`, `_CAPACITY`, `_MAX_CONTAINERS` | auto | Passed to the embedded worker |
 | `CHIPERKA_WORKER_BIN` | `chiperka-worker` | Path to the worker binary |

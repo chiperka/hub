@@ -11,21 +11,10 @@ services:
       # CHIPERKA_PUBLIC_URL: https://chiperka.example.com
       # CHIPERKA_ADMIN_EMAIL: admin@example.com
       # CHIPERKA_ADMIN_PASSWORD: change-me-please
-      # CHIPERKA_WORKER_IMAGE: <chiperka-worker image>   # shown in "Add worker" instructions
+      CHIPERKA_LOCAL_WORKER: "1"           # run tests on this machine (needs the Docker socket below)
     volumes:
       - hub-data:/data
-
-    # Embedded worker (run tests on this machine): build the image with the worker
-    # bundled and mount the Docker socket.
-    # build:
-    #   context: .
-    #   target: hub-with-worker
-    #   args:
-    #     WORKER_IMAGE: <chiperka-worker image>
-    # environment:
-    #   CHIPERKA_LOCAL_WORKER: "1"
-    # volumes:
-    #   - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   hub-data:

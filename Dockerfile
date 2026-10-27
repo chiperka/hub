@@ -1,14 +1,9 @@
-# Chiperka Hub
+# Chiperka Hub — control panel + UI, with chiperka-worker bundled for the
+# optional embedded worker (CHIPERKA_LOCAL_WORKER=1).
 #
 #   docker build -t chiperka-hub .
-#
-# The default target is the control panel only; workers connect to it over HTTP.
-# To also bundle chiperka-worker (embedded worker, CHIPERKA_LOCAL_WORKER=1), build
-# the `hub-with-worker` target from a worker image you have access to:
-#
-#   docker build --target hub-with-worker --build-arg WORKER_IMAGE=<chiperka-worker image> -t chiperka-hub .
 
-ARG WORKER_IMAGE=chiperka-worker:latest
+ARG WORKER_IMAGE=finie/chiperka-worker:latest
 
 FROM node:22-alpine AS ui
 WORKDIR /src/web
@@ -27,7 +22,7 @@ COPY --from=ui /src/web/dist ./web/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/chiperka-hub .
 
 FROM alpine:3.21 AS base
-# docker-cli/curl/bash are only used by an embedded chiperka-worker.
+# docker-cli/curl/bash are used by the embedded chiperka-worker.
 RUN apk add --no-cache ca-certificates tzdata docker-cli curl bash
 COPY --from=build /out/chiperka-hub /usr/local/bin/chiperka-hub
 ENV CHIPERKA_ADDR=:8080 \
@@ -39,7 +34,5 @@ ENTRYPOINT ["chiperka-hub"]
 
 FROM ${WORKER_IMAGE} AS worker
 
-FROM base AS hub-with-worker
-COPY --from=worker /usr/local/bin/chiperka-worker /usr/local/bin/chiperka-worker
-
 FROM base AS hub
+COPY --from=worker /usr/local/bin/chiperka-worker /usr/local/bin/chiperka-worker

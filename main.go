@@ -93,7 +93,7 @@ func main() {
 		Version:       version,
 		JobTimeout:    jobTimeout,
 		RetentionDays: envInt("CHIPERKA_RETENTION_DAYS", 30),
-		WorkerImage:   os.Getenv("CHIPERKA_WORKER_IMAGE"),
+		WorkerImage:   env("CHIPERKA_WORKER_IMAGE", "finie/chiperka-worker:latest"),
 		LocalWorker:   localWorker,
 	}, st, web.FS())
 

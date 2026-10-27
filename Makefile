@@ -1,7 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 IMAGE   ?= chiperka-hub
 
-.PHONY: ui build run dev test docker docker-with-worker clean
+.PHONY: ui build run dev test docker clean
 
 ui:
 	cd web && npm ci --no-audit --no-fund && npm run build
@@ -22,10 +22,6 @@ test:
 
 docker:
 	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE) .
-
-# make docker-with-worker WORKER_IMAGE=<chiperka-worker image>
-docker-with-worker:
-	docker build --target hub-with-worker --build-arg VERSION=$(VERSION) --build-arg WORKER_IMAGE=$(WORKER_IMAGE) -t $(IMAGE) .
 
 clean:
 	rm -rf chiperka-hub web/dist/assets web/dist/index.html web/dist/favicon.svg
