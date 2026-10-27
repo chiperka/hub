@@ -79,6 +79,34 @@ func (s *Store) GetWorkerByToken(ctx context.Context, tokenID int64) (*Worker, e
 	return scanWorker(s.db.QueryRowContext(ctx, `SELECT `+workerCols+` FROM workers w WHERE w.token_id=?`, tokenID))
 }
 
+// JoinedWorkerPrefix marks the IDs of workers that registered themselves with
+// the join token instead of being provisioned in the UI.
+const JoinedWorkerPrefix = "wj-"
+
+// GetJoinedWorker finds a self-registered worker by name.
+func (s *Store) GetJoinedWorker(ctx context.Context, name string) (*Worker, error) {
+	return scanWorker(s.db.QueryRowContext(ctx, `SELECT `+workerCols+` FROM workers w WHERE w.id LIKE ? AND w.name=?
+		ORDER BY w.created_at LIMIT 1`, JoinedWorkerPrefix+"%", name))
+}
+
+// DeleteStaleJoinedWorkers removes self-registered workers offline since before
+// `before`. They rejoin on their next start, so nothing is lost.
+func (s *Store) DeleteStaleJoinedWorkers(ctx context.Context, before int64) (int64, error) {
+	var n int64
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		cond := `id LIKE ? AND status=? AND last_heartbeat<?`
+		args := []any{JoinedWorkerPrefix + "%", WorkerOffline, before}
+		tx.ExecContext(ctx, `DELETE FROM tokens WHERE id IN (SELECT token_id FROM workers WHERE `+cond+`)`, args...)
+		res, err := tx.ExecContext(ctx, `DELETE FROM workers WHERE `+cond, args...)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	return n, err
+}
+
 // CreateWorker provisions a worker in "waiting" state bound to tokenID.
 func (s *Store) CreateWorker(ctx context.Context, id, name string, tokenID int64, isLocal bool) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO workers(id,name,token_id,is_local,status,created_at) VALUES(?,?,?,?,?,?)`,

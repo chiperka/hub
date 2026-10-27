@@ -50,6 +50,35 @@ docker run -d --name chiperka-worker --restart unless-stopped \
   finie/chiperka-worker --api https://chiperka.example.com
 ```
 
+### Join without the UI
+
+To add workers from `docker compose up` or provisioning scripts, give the hub a join token. Then start any number of workers with that token:
+
+```yaml
+services:
+  hub:
+    image: finie/chiperka-hub
+    environment:
+      CHIPERKA_WORKER_JOIN_TOKEN: change-me   # any secret string
+    ports: ["8080:8080"]
+    volumes: ["chiperka-hub:/data"]
+
+  worker:
+    image: finie/chiperka-worker
+    environment:
+      CHIPERKA_API_URL: http://hub:8080
+      CHIPERKA_WORKER_TOKEN: change-me         # the join token
+      CHIPERKA_WORKER_NAME: worker-1           # optional, defaults to the hostname
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+
+volumes:
+  chiperka-hub:
+```
+
+A joining worker registers itself and receives its own worker token. If a worker restarts under the same name, it takes over its existing entry. Joined workers that stay offline for 24 hours are removed automatically. To stop new workers from joining, change or unset the join token. Workers that have already joined keep working until you delete them in the UI.
+
+With `CHIPERKA_AUTH=disabled` and no join token set, a worker started without any token joins on its own.
+
 Notes:
 
 - Workers must be able to pull the service images your tests use.
@@ -73,8 +102,9 @@ When running the binary directly, put `chiperka-worker` on `PATH`, or point `CHI
 | `CHIPERKA_ADDR` | `:8080` | Listen address |
 | `CHIPERKA_DATA_DIR` | `./data` (`/data` in Docker) | Database, snapshots, logs, artifacts |
 | `CHIPERKA_PUBLIC_URL` | derived from the request | External URL used in CLI/worker instructions |
-| `CHIPERKA_AUTH` | `enabled` | `disabled` = no login and no API token needed (worker tokens are still required) |
+| `CHIPERKA_AUTH` | `enabled` | `disabled` = no login and no API token needed (workers without a token may join unless a join token is set) |
 | `CHIPERKA_ADMIN_EMAIL`, `CHIPERKA_ADMIN_PASSWORD` | – | Bootstrap admin when no user exists |
+| `CHIPERKA_WORKER_JOIN_TOKEN` | – | Lets workers register themselves with this token (see [Join without the UI](#join-without-the-ui)) |
 | `CHIPERKA_WORKER_IMAGE` | `finie/chiperka-worker:latest` | Worker image shown in "Add worker" commands |
 | `CHIPERKA_LOCAL_WORKER` | `0` | `1` = supervise an embedded `chiperka-worker` |
 | `CHIPERKA_LOCAL_WORKER_CONCURRENCY`, `_CAPACITY`, `_MAX_CONTAINERS` | auto | Passed to the embedded worker |

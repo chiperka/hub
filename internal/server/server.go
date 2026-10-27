@@ -28,6 +28,8 @@ type Config struct {
 	RetentionDays int
 	WorkerImage   string // image suggested in "add worker" instructions
 	LocalWorker   bool   // an embedded worker is managed by this process
+
+	WorkerJoinToken string // lets workers register themselves without being provisioned in the UI
 }
 
 type Server struct {
@@ -60,7 +62,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/setup", s.handleSetup)
 
 	// Worker protocol (worker token)
-	mux.HandleFunc("POST /api/workers/register", s.workerAuth(s.handleWorkerRegister))
+	mux.HandleFunc("POST /api/workers/register", s.handleWorkerRegister)
 	mux.HandleFunc("POST /api/workers/heartbeat", s.workerAuth(s.handleWorkerHeartbeat))
 	mux.HandleFunc("POST /api/jobs/claim", s.workerAuth(s.handleJobClaim))
 	mux.HandleFunc("POST /api/jobs/ack", s.workerAuth(s.handleJobAck))

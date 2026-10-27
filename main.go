@@ -95,6 +95,8 @@ func main() {
 		RetentionDays: envInt("CHIPERKA_RETENTION_DAYS", 30),
 		WorkerImage:   env("CHIPERKA_WORKER_IMAGE", "finie/chiperka-worker:latest"),
 		LocalWorker:   localWorker,
+
+		WorkerJoinToken: os.Getenv("CHIPERKA_WORKER_JOIN_TOKEN"),
 	}, st, web.FS())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

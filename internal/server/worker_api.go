@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,6 +29,7 @@ const (
 
 func (s *Server) handleWorkerRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		Name          string `json:"name"`
 		Hostname      string `json:"hostname"`
 		Concurrency   int    `json:"concurrency"`
 		Capacity      int    `json:"capacity"`
@@ -41,7 +43,26 @@ func (s *Server) handleWorkerRegister(w http.ResponseWriter, r *http.Request) {
 	if req.Concurrency < 1 {
 		req.Concurrency = 1
 	}
-	wk := workerFrom(r)
+	// A provisioned worker authenticates with its own token. Otherwise it may
+	// join: the hub creates the worker and hands it a token for later calls.
+	var issued string
+	wk := s.authWorker(r)
+	if wk == nil {
+		if !s.canJoin(r) {
+			writeError(w, http.StatusForbidden, "invalid worker token — provision the worker in the UI (Workers → Add worker) or use the hub's join token")
+			return
+		}
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			name = strings.TrimSpace(req.Hostname)
+		}
+		var err error
+		if wk, issued, err = s.joinWorker(r.Context(), name); err != nil {
+			storeError(w, err)
+			return
+		}
+		s.log.Info("worker joined", "worker", wk.ID, "name", wk.Name)
+	}
 	if err := s.store.ActivateWorker(r.Context(), wk.ID, req.Hostname, req.Version, req.Concurrency, req.Capacity, req.MaxContainers); err != nil {
 		storeError(w, err)
 		return
@@ -52,7 +73,49 @@ func (s *Server) handleWorkerRegister(w http.ResponseWriter, r *http.Request) {
 		"concurrency", req.Concurrency, "capacity", req.Capacity)
 	s.changed("workers")
 	s.notifier.Notify()
-	writeJSON(w, http.StatusOK, map[string]string{"status": "registered", "worker_id": wk.ID})
+	resp := map[string]string{"status": "registered", "worker_id": wk.ID}
+	if issued != "" {
+		resp["token"] = issued
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// canJoin reports whether an unprovisioned worker may register itself: it
+// presents the configured join token, or — in trusted mode without a join
+// token — no token at all.
+func (s *Server) canJoin(r *http.Request) bool {
+	tok := bearer(r)
+	if s.cfg.WorkerJoinToken != "" {
+		return subtle.ConstantTimeCompare([]byte(tok), []byte(s.cfg.WorkerJoinToken)) == 1
+	}
+	return s.cfg.AuthDisabled && tok == ""
+}
+
+// joinWorker creates the joined worker called name, or takes over the existing
+// one (a restarted worker keeps its row), and binds it to a fresh token.
+func (s *Server) joinWorker(ctx context.Context, name string) (*store.Worker, string, error) {
+	if name == "" {
+		name = "worker"
+	}
+	tokenID, secret, err := s.store.CreateToken(ctx, "worker "+name, store.TokenWorker)
+	if err != nil {
+		return nil, "", err
+	}
+	wk, err := s.store.GetJoinedWorker(ctx, name)
+	switch {
+	case err == store.ErrNotFound:
+		id := randomID(store.JoinedWorkerPrefix, 4)
+		if err := s.store.CreateWorker(ctx, id, name, tokenID, false); err != nil {
+			return nil, "", err
+		}
+		wk, err = s.store.GetWorker(ctx, id)
+	case err == nil:
+		err = s.store.SetWorkerToken(ctx, wk.ID, tokenID)
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	return wk, secret, nil
 }
 
 func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {

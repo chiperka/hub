@@ -10,6 +10,7 @@ import (
 const (
 	claimAckTimeout = 60 * time.Second // claimed but never acknowledged → back to queue
 	workerTimeout   = 60 * time.Second // no heartbeat → offline, its jobs are retried
+	joinedWorkerTTL = 24 * time.Hour   // offline self-registered workers are forgotten after this
 )
 
 // RunMonitor performs periodic queue housekeeping until ctx is cancelled.
@@ -61,6 +62,10 @@ func (s *Server) checkQueue(ctx context.Context) {
 
 func (s *Server) retention(ctx context.Context) {
 	s.store.PurgeExpiredSessions(ctx)
+	if n, err := s.store.DeleteStaleJoinedWorkers(ctx, store.Now()-joinedWorkerTTL.Milliseconds()); err == nil && n > 0 {
+		s.log.Info("removed long-offline joined workers", "count", n)
+		s.changed("workers")
+	}
 	if s.cfg.RetentionDays <= 0 {
 		return
 	}

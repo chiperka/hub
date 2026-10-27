@@ -202,3 +202,59 @@ func TestSafeRelPath(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkerJoin(t *testing.T) {
+	h := newHarness(t)
+	type regResp struct {
+		WorkerID string `json:"worker_id"`
+		Token    string `json:"token"`
+	}
+	hb := func(tok string) int {
+		return h.do("POST", "/api/workers/heartbeat", tok, map[string]any{}, nil)
+	}
+
+	// Trusted mode without a join token: a worker with no token joins.
+	var a regResp
+	if code := h.do("POST", "/api/workers/register", "", map[string]any{"name": "ci-1", "hostname": "x"}, &a); code != 200 || a.Token == "" {
+		t.Fatalf("open join: %d %+v", code, a)
+	}
+	if hb(a.Token) != 200 {
+		t.Fatal("issued token rejected")
+	}
+
+	// Restart: same name → same worker, the old token stops working.
+	var b regResp
+	h.do("POST", "/api/workers/register", "", map[string]any{"name": "ci-1"}, &b)
+	if b.WorkerID != a.WorkerID || b.Token == a.Token {
+		t.Fatalf("rejoin: %+v vs %+v", b, a)
+	}
+	if hb(a.Token) != 403 || hb(b.Token) != 200 {
+		t.Fatal("token not rotated on rejoin")
+	}
+
+	// With a join token configured, only that token joins.
+	h.s.cfg.WorkerJoinToken = "secret-join"
+	if code := h.do("POST", "/api/workers/register", "", map[string]any{"name": "ci-2"}, nil); code != 403 {
+		t.Fatalf("join without token: %d", code)
+	}
+	if code := h.do("POST", "/api/workers/register", "wrong", map[string]any{"name": "ci-2"}, nil); code != 403 {
+		t.Fatalf("join with wrong token: %d", code)
+	}
+	var c regResp
+	if code := h.do("POST", "/api/workers/register", "secret-join", map[string]any{"hostname": "host-2"}, &c); code != 200 || c.WorkerID == a.WorkerID {
+		t.Fatalf("join token: %d %+v", code, c)
+	}
+	if wk, _ := h.s.store.GetWorker(context.Background(), c.WorkerID); wk.Name != "host-2" {
+		t.Fatalf("name defaults to hostname, got %q", wk.Name)
+	}
+	// The join token itself is not a worker credential.
+	if hb("secret-join") != 403 {
+		t.Fatal("join token accepted as worker token")
+	}
+
+	// Long-offline joined workers are cleaned up.
+	h.s.store.MarkStaleWorkersOffline(context.Background(), store.Now()+1)
+	if n, _ := h.s.store.DeleteStaleJoinedWorkers(context.Background(), store.Now()+1); n != 2 {
+		t.Fatalf("pruned %d joined workers", n)
+	}
+}
