@@ -27,7 +27,6 @@ type Config struct {
 	JobTimeout    time.Duration
 	RetentionDays int
 	WorkerImage   string // image suggested in "add worker" instructions
-	LocalWorker   bool   // an embedded worker is managed by this process
 
 	WorkerJoinToken string // lets workers register themselves without being provisioned in the UI
 }

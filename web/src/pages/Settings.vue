@@ -65,10 +65,9 @@ async function changePassword() {
         <dt class="text-ink-400">Version</dt><dd class="font-mono">{{ info.version }}</dd>
         <dt class="text-ink-400">Public URL</dt><dd class="font-mono">{{ info.server_url }}</dd>
         <dt class="text-ink-400">Authentication</dt><dd>{{ info.auth_disabled ? 'disabled (local mode)' : 'enabled' }}</dd>
-        <dt class="text-ink-400">Embedded worker</dt><dd>{{ info.local_worker ? 'enabled' : 'disabled' }}</dd>
         <dt class="text-ink-400">Worker image</dt><dd class="break-all font-mono text-xs">{{ info.worker_image || 'not set (CHIPERKA_WORKER_IMAGE)' }}</dd>
       </dl>
-      <p class="mt-4 text-xs text-ink-400">Configuration is done with environment variables (<span class="kbd">CHIPERKA_PUBLIC_URL</span>, <span class="kbd">CHIPERKA_RETENTION_DAYS</span>, <span class="kbd">CHIPERKA_LOCAL_WORKER</span>, …) — see the README.</p>
+      <p class="mt-4 text-xs text-ink-400">Configuration is done with environment variables (<span class="kbd">CHIPERKA_PUBLIC_URL</span>, <span class="kbd">CHIPERKA_RETENTION_DAYS</span>, <span class="kbd">CHIPERKA_WORKER_JOIN_TOKEN</span>, …) — see the README.</p>
     </div>
   </div>
 

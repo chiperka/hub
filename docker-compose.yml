@@ -1,5 +1,6 @@
-# Chiperka Hub — http://localhost:8080
+# Chiperka Hub with one worker — http://localhost:8080
 #   docker compose up -d
+#   docker compose up -d --scale worker=3   # more workers
 services:
   hub:
     image: finie/chiperka-hub:latest
@@ -11,9 +12,18 @@ services:
       # CHIPERKA_PUBLIC_URL: https://chiperka.example.com
       # CHIPERKA_ADMIN_EMAIL: admin@example.com
       # CHIPERKA_ADMIN_PASSWORD: change-me-please
-      CHIPERKA_LOCAL_WORKER: "1"           # run tests on this machine (needs the Docker socket below)
+      # CHIPERKA_WORKER_JOIN_TOKEN: change-me  # required for workers to join once auth is enabled
     volumes:
       - hub-data:/data
+
+  worker:
+    image: finie/chiperka-worker:latest
+    restart: unless-stopped
+    depends_on: [hub]
+    environment:
+      CHIPERKA_API_URL: http://hub:8080
+      # CHIPERKA_WORKER_TOKEN: change-me       # the hub's join token, when set
+    volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:

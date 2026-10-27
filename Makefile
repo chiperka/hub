@@ -9,7 +9,7 @@ ui:
 build: ui
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o chiperka-hub .
 
-# Run locally without auth, data in ./data. Add CHIPERKA_LOCAL_WORKER=1 (chiperka-worker in PATH) to execute tests here.
+# Run locally without auth, data in ./data.
 run: build
 	CHIPERKA_AUTH=disabled ./chiperka-hub
 

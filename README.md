@@ -12,9 +12,10 @@ Everything is stored in SQLite plus plain files in a single data directory.
 ## Install
 
 ```bash
-# Docker
-docker run -d --name chiperka-hub -p 8080:8080 -v chiperka-hub:/data finie/chiperka-hub
+docker compose up -d   # hub + one worker, see docker-compose.yml
 
+# or just the hub
+docker run -d --name chiperka-hub -p 8080:8080 -v chiperka-hub:/data finie/chiperka-hub
 # or grab a binary from the GitHub releases
 ```
 
@@ -84,17 +85,6 @@ Notes:
 - Workers must be able to pull the service images your tests use.
 - Run one worker per Docker daemon.
 
-### Embedded worker
-
-The image bundles [chiperka-worker](https://github.com/chiperka/worker). To run tests on the same machine as the hub, enable it and mount the Docker socket:
-
-```bash
-docker run -d -p 8080:8080 -v chiperka-hub:/data -v /var/run/docker.sock:/var/run/docker.sock \
-  -e CHIPERKA_LOCAL_WORKER=1 finie/chiperka-hub
-```
-
-When running the binary directly, put `chiperka-worker` on `PATH`, or point `CHIPERKA_WORKER_BIN` at it.
-
 ## Configuration
 
 | Variable | Default | Description |
@@ -106,9 +96,6 @@ When running the binary directly, put `chiperka-worker` on `PATH`, or point `CHI
 | `CHIPERKA_ADMIN_EMAIL`, `CHIPERKA_ADMIN_PASSWORD` | – | Bootstrap admin when no user exists |
 | `CHIPERKA_WORKER_JOIN_TOKEN` | – | Lets workers register themselves with this token (see [Join without the UI](#join-without-the-ui)) |
 | `CHIPERKA_WORKER_IMAGE` | `finie/chiperka-worker:latest` | Worker image shown in "Add worker" commands |
-| `CHIPERKA_LOCAL_WORKER` | `0` | `1` = supervise an embedded `chiperka-worker` |
-| `CHIPERKA_LOCAL_WORKER_CONCURRENCY`, `_CAPACITY`, `_MAX_CONTAINERS` | auto | Passed to the embedded worker |
-| `CHIPERKA_WORKER_BIN` | `chiperka-worker` | Path to the worker binary |
 | `CHIPERKA_JOB_TIMEOUT` | `300s` | Per-test timeout |
 | `CHIPERKA_RETENTION_DAYS` | `30` | Delete finished runs older than this (`0` = keep forever) |
 
@@ -151,7 +138,6 @@ make docker  # build the Docker image
 | `internal/store` | SQLite persistence |
 | `internal/compile` | Test → job DAG compiler |
 | `internal/server` | HTTP API, SSE, queue monitor, reports |
-| `internal/localworker` | Embedded worker supervisor |
 | `internal/model` | Test model shared with the CLI |
 | `web/` | Vue 3 + Vite + Tailwind UI, embedded into the binary |
 

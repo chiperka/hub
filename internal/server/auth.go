@@ -235,7 +235,6 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"principal":     principal(r),
 		"auth_disabled": s.cfg.AuthDisabled,
 		"version":       s.cfg.Version,
-		"local_worker":  s.cfg.LocalWorker,
 	})
 }
 

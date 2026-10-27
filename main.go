@@ -21,7 +21,6 @@ import (
 	"syscall"
 	"time"
 
-	"chiperka-hub/internal/localworker"
 	"chiperka-hub/internal/server"
 	"chiperka-hub/internal/store"
 	"chiperka-hub/web"
@@ -73,7 +72,6 @@ func main() {
 		os.Exit(2)
 	}
 	authDisabled := !envBool("CHIPERKA_AUTH", true)
-	localWorker := envBool("CHIPERKA_LOCAL_WORKER", false)
 
 	if err := os.MkdirAll(*dataDir, 0o755); err != nil {
 		log.Error("cannot create data dir", "dir", *dataDir, "err", err)
@@ -94,7 +92,6 @@ func main() {
 		JobTimeout:    jobTimeout,
 		RetentionDays: envInt("CHIPERKA_RETENTION_DAYS", 30),
 		WorkerImage:   env("CHIPERKA_WORKER_IMAGE", "finie/chiperka-worker:latest"),
-		LocalWorker:   localWorker,
 
 		WorkerJoinToken: os.Getenv("CHIPERKA_WORKER_JOIN_TOKEN"),
 	}, st, web.FS())
@@ -119,37 +116,15 @@ func main() {
 			stop()
 		}
 	}()
-	log.Info("chiperka-hub listening", "addr", *addr, "data", *dataDir, "version", version, "auth", !authDisabled, "local_worker", localWorker)
+	log.Info("chiperka-hub listening", "addr", *addr, "data", *dataDir, "version", version, "auth", !authDisabled)
 	if authDisabled {
 		log.Warn("authentication is DISABLED (CHIPERKA_AUTH=disabled) — do not expose this instance publicly")
 	}
 
 	go srv.RunMonitor(ctx)
 
-	workerDone := make(chan struct{})
-	if localWorker {
-		_, port, _ := net.SplitHostPort(ln.Addr().String())
-		go func() {
-			defer close(workerDone)
-			localworker.Run(ctx, st, localworker.Options{
-				API:           "http://127.0.0.1:" + port,
-				Binary:        env("CHIPERKA_WORKER_BIN", "chiperka-worker"),
-				Concurrency:   envInt("CHIPERKA_LOCAL_WORKER_CONCURRENCY", 0),
-				Capacity:      envInt("CHIPERKA_LOCAL_WORKER_CAPACITY", 0),
-				MaxContainers: envInt("CHIPERKA_LOCAL_WORKER_MAX_CONTAINERS", 0),
-			}, log)
-		}()
-	} else {
-		close(workerDone)
-	}
-
 	<-ctx.Done()
 	log.Info("shutting down")
-	// Let the embedded worker drain (it reports results through the HTTP server).
-	select {
-	case <-workerDone:
-	case <-time.After(40 * time.Second):
-	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	httpSrv.Shutdown(shutdownCtx)

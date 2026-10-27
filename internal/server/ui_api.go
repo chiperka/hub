@@ -34,7 +34,6 @@ func (s *Server) handleConnectInfo(w http.ResponseWriter, r *http.Request) {
 		"server_url":    s.publicURL(r),
 		"auth_disabled": s.cfg.AuthDisabled,
 		"worker_image":  s.cfg.WorkerImage,
-		"local_worker":  s.cfg.LocalWorker,
 		"version":       s.cfg.Version,
 	})
 }
@@ -297,7 +296,7 @@ func (s *Server) handleWorkerDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if wk.IsLocal {
-		writeError(w, http.StatusBadRequest, "the embedded local worker cannot be deleted; pause it instead or disable CHIPERKA_LOCAL_WORKER")
+		writeError(w, http.StatusBadRequest, "the embedded local worker cannot be deleted; pause it instead")
 		return
 	}
 	s.failWorkerJobs(id, "worker was deleted")
