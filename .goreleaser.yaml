@@ -1,0 +1,48 @@
+version: 2
+
+before:
+  hooks:
+    - sh -c "cd web && npm ci --no-audit --no-fund && npm run build"
+
+builds:
+  - binary: chiperka-hub
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+brews:
+  - name: chiperka-hub
+    repository:
+      owner: chiperka
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://about.chiperka.com"
+    description: "Self-hosted Chiperka control panel: run tests from the CLI on your own workers."
+    license: "Apache-2.0"
+    install: |
+      bin.install "chiperka-hub"
+    test: |
+      system "#{bin}/chiperka-hub", "--version"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"

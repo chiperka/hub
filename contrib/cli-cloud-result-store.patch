@@ -1,0 +1,158 @@
+From a1ec95ddc27ab0f0e5f65db268a6b9f7ecfd6256 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Josef=20Benja=C4=8D?= <josefbenjac@gmail.com>
+Date: Tue, 27 Oct 2026 18:32:12 +0100
+Subject: [PATCH] feat(result): implement CloudStore on top of the results API
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`chiperka result` and the MCP result tools route cloud ids (cr-…, ct-…)
+to CloudStore, which was a stub. Implement it against a Chiperka server's
+results API:
+
+  GET /api/results/runs?limit=N
+  GET /api/results/runs/{cr-id}
+  GET /api/results/tests/{ct-uuid}
+  GET /api/results/tests/{ct-uuid}/artifacts/{name}
+
+The server URL comes from CHIPERKA_CLOUD_URL, the token from CHIPERKA_TOKEN
+or ./auth.json — the same sources `chiperka test --cloud` uses. Responses
+are decoded straight into the existing RunSummary / TestDetail types.
+
+Served by Chiperka Hub (github.com/chiperka/hub); Chiperka Cloud
+can expose the same endpoints.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ internal/result/store_cloud.go | 102 ++++++++++++++++++++++++++++++---
+ 1 file changed, 93 insertions(+), 9 deletions(-)
+
+diff --git a/internal/result/store_cloud.go b/internal/result/store_cloud.go
+index 8328719..7ad1ffc 100644
+--- a/internal/result/store_cloud.go
++++ b/internal/result/store_cloud.go
+@@ -1,28 +1,112 @@
+ package result
+ 
+-import "fmt"
++import (
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"net/url"
++	"os"
++	"strings"
++	"time"
++)
+ 
+-// CloudStore reads results from the Chiperka Cloud API.
+-// Currently a stub — will be implemented when cloud result endpoints are available.
+-type CloudStore struct{}
++// CloudStore reads results from a Chiperka server's results API
++// (/api/results/...), e.g. a self-hosted chiperka-local instance.
++//
++// The server URL comes from CHIPERKA_CLOUD_URL; the token from CHIPERKA_TOKEN
++// or ./auth.json ({"chiperka-token": {"<host>": "<token>"}}), like `test --cloud`.
++type CloudStore struct {
++	baseURL string
++	token   string
++	client  *http.Client
++}
+ 
+ // NewCloudStore creates a new cloud result store.
+ func NewCloudStore() *CloudStore {
+-	return &CloudStore{}
++	base := strings.TrimRight(os.Getenv("CHIPERKA_CLOUD_URL"), "/")
++	return &CloudStore{baseURL: base, token: cloudToken(base), client: &http.Client{Timeout: 60 * time.Second}}
++}
++
++func cloudToken(base string) string {
++	if t := os.Getenv("CHIPERKA_TOKEN"); t != "" {
++		return t
++	}
++	data, err := os.ReadFile("auth.json")
++	if err != nil {
++		return ""
++	}
++	var f struct {
++		Tokens map[string]string `json:"chiperka-token"`
++	}
++	if json.Unmarshal(data, &f) != nil {
++		return ""
++	}
++	if u, err := url.Parse(base); err == nil {
++		return f.Tokens[u.Host]
++	}
++	return ""
++}
++
++func (s *CloudStore) get(path string) ([]byte, error) {
++	if s.baseURL == "" {
++		return nil, fmt.Errorf("cloud results need CHIPERKA_CLOUD_URL to be set")
++	}
++	req, err := http.NewRequest("GET", s.baseURL+path, nil)
++	if err != nil {
++		return nil, err
++	}
++	if s.token != "" {
++		req.Header.Set("Authorization", "Bearer "+s.token)
++	}
++	resp, err := s.client.Do(req)
++	if err != nil {
++		return nil, err
++	}
++	defer resp.Body.Close()
++	body, err := io.ReadAll(resp.Body)
++	if err != nil {
++		return nil, err
++	}
++	if resp.StatusCode != http.StatusOK {
++		return nil, fmt.Errorf("cloud API %s returned %d: %s", path, resp.StatusCode, strings.TrimSpace(string(body)))
++	}
++	return body, nil
++}
++
++func (s *CloudStore) getJSON(path string, v any) error {
++	body, err := s.get(path)
++	if err != nil {
++		return err
++	}
++	return json.Unmarshal(body, v)
+ }
+ 
+ func (s *CloudStore) ListRuns(limit int) ([]RunSummary, error) {
+-	return nil, fmt.Errorf("cloud result listing is not yet supported")
++	var runs []RunSummary
++	return runs, s.getJSON(fmt.Sprintf("/api/results/runs?limit=%d", limit), &runs)
+ }
+ 
+ func (s *CloudStore) GetRun(uuid string) (*RunSummary, error) {
+-	return nil, fmt.Errorf("cloud result retrieval is not yet supported")
++	var run RunSummary
++	if err := s.getJSON("/api/results/runs/"+url.PathEscape(uuid), &run); err != nil {
++		return nil, err
++	}
++	return &run, nil
+ }
+ 
+ func (s *CloudStore) GetTest(uuid string) (*TestDetail, error) {
+-	return nil, fmt.Errorf("cloud result retrieval is not yet supported")
++	var t TestDetail
++	if err := s.getJSON("/api/results/tests/"+url.PathEscape(uuid), &t); err != nil {
++		return nil, err
++	}
++	return &t, nil
+ }
+ 
+ func (s *CloudStore) GetArtifact(testUUID string, name string) ([]byte, error) {
+-	return nil, fmt.Errorf("cloud result retrieval is not yet supported")
++	parts := strings.Split(name, "/")
++	for i, p := range parts {
++		parts[i] = url.PathEscape(p)
++	}
++	return s.get("/api/results/tests/" + url.PathEscape(testUUID) + "/artifacts/" + strings.Join(parts, "/"))
+ }
+-- 
+2.39.5 (Apple Git-154)
+

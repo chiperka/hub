@@ -1,0 +1,7 @@
+/data/
+/chiperka-hub
+/bin/
+*.db
+*.db-wal
+*.db-shm
+.idea/
