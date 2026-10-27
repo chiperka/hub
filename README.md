@@ -15,9 +15,6 @@ Everything is stored in SQLite plus plain files in a single data directory.
 # Docker
 docker run -d --name chiperka-hub -p 8080:8080 -v chiperka-hub:/data finie/chiperka-hub
 
-# Homebrew
-brew install chiperka/tap/chiperka-hub && chiperka-hub
-
 # or grab a binary from the GitHub releases
 ```
 
@@ -130,7 +127,7 @@ make docker  # build the Docker image
 | `internal/model` | Test model shared with the CLI |
 | `web/` | Vue 3 + Vite + Tailwind UI, embedded into the binary |
 
-Releases are cut by pushing a semver tag (`1.2.3`). GitHub Actions then builds the binaries, the Homebrew formula and the `finie/chiperka-hub` Docker image.
+Releases are cut by pushing a semver tag (`1.2.3`). GitHub Actions then builds the binaries and the `finie/chiperka-hub` Docker image.
 
 ## License
 

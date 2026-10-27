@@ -25,20 +25,6 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
-brews:
-  - name: chiperka-hub
-    repository:
-      owner: chiperka
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    homepage: "https://about.chiperka.com"
-    description: "Self-hosted Chiperka control panel: run tests from the CLI on your own workers."
-    license: "Apache-2.0"
-    install: |
-      bin.install "chiperka-hub"
-    test: |
-      system "#{bin}/chiperka-hub", "--version"
-
 changelog:
   sort: asc
   filters:
