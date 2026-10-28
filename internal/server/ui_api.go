@@ -84,6 +84,7 @@ func (s *Server) handleRunDelete(w http.ResponseWriter, r *http.Request) {
 		active, _ := s.store.CancelRun(ctx, runID)
 		s.cancelJobsOnWorkers(ctx, active)
 	}
+	s.registry.Delete(runID)
 	if err := s.store.DeleteRun(ctx, runID); err != nil {
 		storeError(w, err)
 		return

@@ -35,6 +35,7 @@ type runInput struct {
 	Suites         []suiteInput
 	Normalize      bool // rewrite suite-relative snapshot paths (fresh CLI submissions only)
 	SnapshotsReady bool
+	RegistryAuth   []compile.RegistryAuth
 }
 
 func newRunID() string {
@@ -95,7 +96,10 @@ func (s *Server) createRun(ctx context.Context, in runInput) (*store.Run, error)
 	if !in.SnapshotsReady && !hasSnapshots {
 		run.SnapshotsReady = true
 	}
+	// Registered before the run is stored so no job can be claimed without them.
+	s.registry.Set(run.ID, in.RegistryAuth)
 	if err := s.store.CreateRun(ctx, run, suites); err != nil {
+		s.registry.Delete(run.ID)
 		return nil, err
 	}
 	created, finished, err := s.store.RefreshRun(ctx, run.ID)
@@ -121,7 +125,8 @@ func (s *Server) handleRunCreate(w http.ResponseWriter, r *http.Request) {
 		Config *struct {
 			Version string `json:"version"`
 		} `json:"config"`
-		ProjectID *int64 `json:"project_id"`
+		ProjectID    *int64                 `json:"project_id"`
+		RegistryAuth []compile.RegistryAuth `json:"registry_auth"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -141,7 +146,7 @@ func (s *Server) handleRunCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	in := runInput{ProjectID: req.ProjectID, Source: "cli", CreatedBy: principal(r).Name, Suites: req.Suites, Normalize: true}
+	in := runInput{ProjectID: req.ProjectID, Source: "cli", CreatedBy: principal(r).Name, Suites: req.Suites, Normalize: true, RegistryAuth: req.RegistryAuth}
 	if req.Config != nil {
 		in.Version = req.Config.Version
 	}

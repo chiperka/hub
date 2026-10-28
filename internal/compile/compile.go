@@ -23,6 +23,15 @@ type Job struct {
 	Meta           *Meta            `json:"meta,omitempty"`
 	Weight         int              `json:"weight"`
 	ContainerCount int              `json:"container_count"`
+	// RegistryAuth is attached at claim time from the run's in-memory credentials, never stored in the DAG.
+	RegistryAuth []RegistryAuth `json:"registry_auth,omitempty"`
+}
+
+// RegistryAuth holds credentials the worker uses to pull images from Host.
+type RegistryAuth struct {
+	Host     string `json:"host"`
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 // Step is a single instruction in the job DAG.

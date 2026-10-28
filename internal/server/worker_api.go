@@ -193,6 +193,7 @@ func (s *Server) handleJobClaim(w http.ResponseWriter, r *http.Request) {
 				cj.Token = j.Token
 				if cj.Meta != nil {
 					cj.Meta.JobID = j.ID
+					cj.RegistryAuth = s.registry.Get(cj.Meta.RunID)
 				}
 				out = append(out, &cj)
 			}
@@ -515,6 +516,7 @@ func (s *Server) refreshRun(runID string) {
 }
 
 func (s *Server) publishRunEnd(run *store.Run) {
+	s.registry.Delete(run.ID)
 	if run.IsCancelled {
 		s.hub.Publish(runTopic(run.ID), "run_cancelled", map[string]any{
 			"run_id": run.ID, "passed": run.Passed, "failed": run.Failed + run.Errored, "cancelled": run.Cancelled + run.Skipped,

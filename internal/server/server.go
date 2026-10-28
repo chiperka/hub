@@ -36,6 +36,7 @@ type Server struct {
 	store    *store.Store
 	hub      *Hub
 	notifier *Notifier
+	registry *registryAuths
 	ui       fs.FS
 	log      *slog.Logger
 }
@@ -44,7 +45,7 @@ func New(cfg Config, st *store.Store, ui fs.FS) *Server {
 	if cfg.JobTimeout <= 0 {
 		cfg.JobTimeout = 5 * time.Minute
 	}
-	return &Server{cfg: cfg, store: st, hub: NewHub(), notifier: NewNotifier(), ui: ui, log: slog.Default()}
+	return &Server{cfg: cfg, store: st, hub: NewHub(), notifier: NewNotifier(), registry: newRegistryAuths(), ui: ui, log: slog.Default()}
 }
 
 func (s *Server) Store() *store.Store { return s.store }

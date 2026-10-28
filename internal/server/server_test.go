@@ -258,3 +258,60 @@ func TestWorkerJoin(t *testing.T) {
 		t.Fatalf("pruned %d joined workers", n)
 	}
 }
+
+func TestRegistryAuthReachesClaimedJobOnly(t *testing.T) {
+	h := newHarness(t)
+
+	var req map[string]any
+	json.Unmarshal([]byte(suiteJSON), &req)
+	req["registry_auth"] = []map[string]string{
+		{"host": "registry.example.com", "username": "gitlab-ci-token", "password": "job-token"},
+		{"host": "", "username": "u", "password": "p"},
+	}
+	var created struct{ ID string }
+	if code := h.do("POST", "/api/runs", "", req, &created); code != 201 {
+		t.Fatalf("create run: %d", code)
+	}
+
+	var prov struct{ Token string }
+	h.do("POST", "/api/workers", "", map[string]string{"name": "w"}, &prov)
+	var reg struct {
+		WorkerID string `json:"worker_id"`
+	}
+	h.do("POST", "/api/workers/register", prov.Token, map[string]any{"hostname": "h", "concurrency": 1, "capacity": 4}, &reg)
+
+	var res struct {
+		Jobs []struct {
+			JobID        string              `json:"job_id"`
+			Token        string              `json:"token"`
+			RegistryAuth []map[string]string `json:"registry_auth"`
+		}
+	}
+	if code := h.do("POST", "/api/jobs/claim", prov.Token, map[string]any{"worker_id": reg.WorkerID, "count": 4, "timeout_ms": 200, "available_capacity": 4}, &res); code != 200 || len(res.Jobs) != 1 {
+		t.Fatalf("claim: %d %d jobs", code, len(res.Jobs))
+	}
+	ra := res.Jobs[0].RegistryAuth
+	if len(ra) != 1 || ra[0]["host"] != "registry.example.com" || ra[0]["password"] != "job-token" {
+		t.Fatalf("registry auth on job: %v", ra)
+	}
+
+	// Never exposed through the read APIs.
+	for _, path := range []string{"/api/runs/" + created.ID, "/api/jobs/" + res.Jobs[0].JobID, "/api/jobs?run=" + created.ID} {
+		r, err := http.Get(h.srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		if strings.Contains(string(body), "job-token") {
+			t.Fatalf("%s leaks the registry password", path)
+		}
+	}
+
+	// Dropped once the run finishes.
+	h.do("POST", "/api/jobs/"+res.Jobs[0].JobID+"/complete", res.Jobs[0].Token,
+		map[string]any{"status": "passed", "duration_ms": 5, "step_results": map[string]any{}}, nil)
+	if got := h.s.registry.Get(created.ID); got != nil {
+		t.Fatalf("registry auth kept after run end: %v", got)
+	}
+}
