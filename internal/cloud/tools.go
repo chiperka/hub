@@ -50,6 +50,9 @@ func Janitor(ctx context.Context, providers map[string]Provider, maxAge time.Dur
 	return firstErr
 }
 
+// DefaultImageDiskGB keeps images small, so the disk size in the settings decides.
+const DefaultImageDiskGB = 30
+
 type BuildImageOptions struct {
 	Type, Location   string
 	WorkerImage      string
@@ -57,9 +60,12 @@ type BuildImageOptions struct {
 	Registry         string
 	RegistryUser     string
 	RegistryPassword string
-	Keep             int           // how many images to keep, newest first
-	SSHAllowCIDR     string        // AWS only: create/update the security group first
-	Timeout          time.Duration // for provisioning
+	Keep             int // how many images to keep, newest first
+	// DiskGB is the builder's disk, which becomes the image's minimum disk:
+	// AWS servers started from the image get at least this much.
+	DiskGB       int
+	SSHAllowCIDR string        // AWS only: create/update the security group first
+	Timeout      time.Duration // for provisioning
 }
 
 // BuildImage boots a builder server from stock Ubuntu, lets cloud-init install
@@ -71,6 +77,9 @@ func BuildImage(ctx context.Context, p Provider, o BuildImageOptions, out io.Wri
 	}
 	if o.Timeout <= 0 {
 		o.Timeout = 40 * time.Minute
+	}
+	if o.DiskGB <= 0 {
+		o.DiskGB = DefaultImageDiskGB
 	}
 	name := "chiperka-worker-" + time.Now().UTC().Format("20060102-1504")
 	labels := map[string]string{LabelManaged: "true", LabelHub: "builder"}
@@ -104,7 +113,7 @@ func BuildImage(ctx context.Context, p Provider, o BuildImageOptions, out io.Wri
 	}
 	fmt.Fprintf(out, "creating builder %s (%s in %s) from %s\n", name, o.Type, o.Location, base)
 	inst, err := p.Create(ctx, CreateRequest{
-		Name: name, Type: o.Type, Location: o.Location, Image: base, UserData: ud, DiskGB: 60, Labels: labels, StopOnShutdown: true,
+		Name: name, Type: o.Type, Location: o.Location, Image: base, UserData: ud, DiskGB: o.DiskGB, Labels: labels, StopOnShutdown: true,
 	})
 	if err != nil {
 		return nil, err

@@ -138,16 +138,67 @@ func TestAWSImage(t *testing.T) {
 	}
 }
 
+func TestParseOnDemandPrice(t *testing.T) {
+	// Shape of a Price List API product, trimmed.
+	product := `{"product":{"attributes":{"instanceType":"m7i-flex.large","regionCode":"eu-north-1"}},
+		"terms":{"OnDemand":{"ABC.JRTCKXETXF":{"priceDimensions":{"ABC.JRTCKXETXF.6YS6EN2CT7":{
+			"unit":"Hrs","pricePerUnit":{"USD":"0.0907000000"}}}}}}}`
+	p, err := parseOnDemandPrice([]string{product})
+	if err != nil || p != 0.0907 {
+		t.Fatalf("price %v, %v", p, err)
+	}
+	zero := strings.Replace(product, "0.0907000000", "0.0000000000", 1)
+	if _, err := parseOnDemandPrice([]string{zero}); err == nil {
+		t.Error("a zero price must not count")
+	}
+	if _, err := parseOnDemandPrice(nil); err == nil {
+		t.Error("no products must fail")
+	}
+	if _, err := parseOnDemandPrice([]string{"{"}); err == nil {
+		t.Error("bad JSON must fail")
+	}
+}
+
+func TestRootDisk(t *testing.T) {
+	img := &types.Image{
+		RootDeviceName: aws.String("/dev/sda1"),
+		BlockDeviceMappings: []types.BlockDeviceMapping{
+			{DeviceName: aws.String("/dev/sda1"), Ebs: &types.EbsBlockDevice{VolumeSize: aws.Int32(60)}},
+			{DeviceName: aws.String("/dev/sdb"), Ebs: &types.EbsBlockDevice{VolumeSize: aws.Int32(500)}},
+		},
+	}
+	root := rootDiskOf(img)
+	if root.Device != "/dev/sda1" || root.SizeGB != 60 {
+		t.Fatalf("root disk %+v", root)
+	}
+	if rootDiskOf(&types.Image{}).Device != "/dev/sda1" {
+		t.Error("missing root device name must default to /dev/sda1")
+	}
+	for _, c := range []struct{ requested, image, want int }{
+		{30, 60, 60}, // the bug: a 60 GB image with 30 GB in the settings
+		{100, 60, 100},
+		{0, 8, 60},
+		{0, 80, 80},
+	} {
+		if got := rootDiskGB(c.requested, awsRootDisk{SizeGB: c.image}); got != c.want {
+			t.Errorf("rootDiskGB(%d, image %d) = %d, want %d", c.requested, c.image, got, c.want)
+		}
+	}
+}
+
 func TestAWSDefaultsAndPrices(t *testing.T) {
+	// No credentials anywhere: the Price List API cannot be asked, and nothing is made up.
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_PROFILE", "chiperka-test-none")
+	t.Setenv("AWS_CONFIG_FILE", "/nonexistent")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "/nonexistent")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
 	a := NewAWS("", "", "")
 	if a.Region != "eu-central-1" || a.Name() != "aws" || a.Currency() != "USD" {
 		t.Fatalf("bad defaults %+v", a)
 	}
-	p, err := a.HourlyPrice(context.Background(), "c7a.4xlarge", "eu-central-1a", false)
-	if err != nil || p < 0.9 || p > 1.0 {
-		t.Fatalf("c7a.4xlarge price %v, %v", p, err)
-	}
-	if _, err := a.HourlyPrice(context.Background(), "x1.nope", "eu-central-1a", false); err == nil {
-		t.Error("unknown type must fail")
+	if p, err := a.HourlyPrice(context.Background(), "c7a.4xlarge", "eu-central-1a", false); err == nil {
+		t.Errorf("a price without asking AWS must fail, got %v", p)
 	}
 }

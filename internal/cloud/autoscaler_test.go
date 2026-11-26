@@ -26,6 +26,7 @@ type fakeProvider struct {
 	quota       bool
 	deleteErr   error
 	hidden      map[string]bool // created but not yet listed (eventual consistency)
+	priceErr    error
 	deleted     []string
 	created     []CreateRequest
 }
@@ -82,6 +83,11 @@ func (f *fakeProvider) List(context.Context) ([]Instance, error) {
 	return out, nil
 }
 func (f *fakeProvider) HourlyPrice(context.Context, string, string, bool) (float64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.priceErr != nil {
+		return 0, f.priceErr
+	}
 	return 0.2, nil
 }
 func (f *fakeProvider) ValidateType(_ context.Context, t string) error {
@@ -473,6 +479,68 @@ func TestBudgetStopsNewServers(t *testing.T) {
 	}
 	if _, err := e.a.Launch(ctx, 1); err == nil {
 		t.Fatal("manual launch must respect the budget")
+	}
+}
+
+func TestUnknownPriceStopsNewServersUnderBudget(t *testing.T) {
+	defer func(d time.Duration) { priceRetryDelay = d }(priceRetryDelay)
+	priceRetryDelay = time.Millisecond
+	e := newEnv(t, func(s *Settings) { s.MonthlyBudget = 50 })
+	ctx := context.Background()
+	e.p.mu.Lock()
+	e.p.priceErr = fmt.Errorf("price list unavailable")
+	e.p.mu.Unlock()
+
+	e.queue = 100
+	e.tick(time.Now())
+	if n := e.p.count(); n != 2 {
+		t.Fatalf("want 2 servers, got %d", n)
+	}
+	for _, s := range e.active() {
+		if !s.PriceUnknown || s.HourlyPrice != 0 {
+			t.Fatalf("no price may be made up: %+v", s)
+		}
+	}
+	if st := e.a.State(ctx); st.Status != StatusPriceUnknown || st.PriceUnknown != 2 || st.SpendMonth != 0 {
+		t.Fatalf("state %+v", st)
+	}
+	e.queue = 1135
+	e.tick(time.Now())
+	if n := e.p.count(); n != 2 {
+		t.Fatalf("unknown price under a budget, yet %d servers", n)
+	}
+	if _, err := e.a.Launch(ctx, 1); err == nil || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("manual launch must stop too, got %v", err)
+	}
+
+	e.p.mu.Lock()
+	e.p.priceErr = nil
+	e.p.mu.Unlock()
+	e.a.prices = map[string]priceEntry{}
+	e.a.reconcile(ctx)
+	for _, s := range e.active() {
+		if s.PriceUnknown || s.HourlyPrice != 0.2 {
+			t.Fatalf("price not filled in later: %+v", s)
+		}
+	}
+	if st := e.a.State(ctx); st.Status != StatusRunning || st.PriceUnknown != 0 {
+		t.Fatalf("state after the price came %+v", st)
+	}
+}
+
+func TestUnknownPriceWithoutBudget(t *testing.T) {
+	defer func(d time.Duration) { priceRetryDelay = d }(priceRetryDelay)
+	priceRetryDelay = time.Millisecond
+	e := newEnv(t, func(s *Settings) { s.MonthlyBudget = 0 })
+	e.p.mu.Lock()
+	e.p.priceErr = fmt.Errorf("price list unavailable")
+	e.p.mu.Unlock()
+	e.queue = 100
+	e.tick(time.Now())
+	e.queue = 1135
+	e.tick(time.Now())
+	if n := e.p.count(); n != 4 {
+		t.Fatalf("no budget to protect: want 4 servers, got %d", n)
 	}
 }
 

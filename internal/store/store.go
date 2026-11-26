@@ -182,7 +182,25 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	// Columns added after a table was first created; CREATE TABLE IF NOT EXISTS skips them.
+	for _, c := range []struct{ table, column, def string }{
+		{"cloud_servers", "price_unknown", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := addColumn(db, c.table, c.column, c.def); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("migrate %s.%s: %w", c.table, c.column, err)
+		}
+	}
 	return &Store{db: db}, nil
+}
+
+func addColumn(db *sql.DB, table, column, def string) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, table, column).Scan(&n); err != nil || n > 0 {
+		return err
+	}
+	_, err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, def))
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }

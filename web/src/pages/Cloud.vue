@@ -54,6 +54,7 @@ const statusLine = computed(() => {
     running: { text: 'running', cls: 'bg-emerald-400', ping: true },
     paused: { text: 'paused', cls: 'bg-amber-400' },
     budget: { text: 'budget used up', cls: 'bg-red-400' },
+    price_unknown: { text: 'price unknown', cls: 'bg-amber-400' },
     backoff: { text: 'waiting after an error', cls: 'bg-amber-400' },
     not_configured: { text: 'not configured', cls: 'bg-ink-500' },
   }[s.status] || { text: s.status, cls: 'bg-ink-500' }
@@ -130,7 +131,7 @@ function story(s) {
 }
 
 function money_(v) { return money(v, state.value?.currency) }
-function serverMoney(s) { return money(s.cost, s.currency) }
+function serverMoney(s) { return s.price_unknown ? 'price unknown' : money(s.cost, s.currency) }
 
 // ── timeline (SVG) ──────────────────────────────────────────────────────────
 const W = 1000
@@ -217,6 +218,7 @@ const costMax = computed(() => Math.max(0.01, ...(costs.value?.daily || []).map(
             {{ money_(state.spend_month) }}
             <span v-if="state.budget > 0" class="text-sm text-ink-400">of {{ money_(state.budget) }}</span>
           </div>
+          <div v-if="state.price_unknown" class="mt-0.5 text-xs text-amber-300">without {{ state.price_unknown }} server{{ state.price_unknown > 1 ? 's' : '' }} of unknown price</div>
           <div v-if="state.budget > 0" class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-ink-800">
             <div class="h-full rounded-full" :class="budgetPct >= 100 ? 'bg-red-400' : budgetPct > 80 ? 'bg-amber-400' : 'bg-emerald-400'" :style="{ width: budgetPct + '%' }" />
           </div>
@@ -278,7 +280,8 @@ const costMax = computed(() => Math.max(0.01, ...(costs.value?.daily || []).map(
               <div class="mb-1 text-ink-400">Time &amp; money</div>
               <div v-if="s.provider === 'hetzner' && s.paid_until" class="font-mono text-ink-200">paid for {{ countdown(s.paid_until, now) }} more</div>
               <div v-else-if="s.provider_created_at" class="font-mono text-ink-200">running {{ offset(s.provider_created_at, now) }}</div>
-              <div class="text-ink-500">~{{ serverMoney(s) }} so far<template v-if="s.hourly_price"> · {{ money(s.hourly_price, s.currency) }}/h</template></div>
+              <div v-if="s.price_unknown" class="text-amber-300">price unknown</div>
+              <div v-else class="text-ink-500">~{{ serverMoney(s) }} so far<template v-if="s.hourly_price"> · {{ money(s.hourly_price, s.currency) }}/h</template></div>
             </div>
             <div class="col-span-2 space-y-0.5 text-ink-300">
               <div v-for="(l, i) in story(s)" :key="i" class="first-letter:uppercase">{{ l }}</div>

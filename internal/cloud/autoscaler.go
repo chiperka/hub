@@ -83,9 +83,8 @@ type Autoscaler struct {
 	queueDepth func(context.Context) int // tests replace it
 }
 
-// fallbackPrice is counted when a price cannot be looked up: deliberately high,
-// so an unknown price can only make the budget stricter.
-var fallbackPrice = map[string]float64{"hetzner": 1.0, "aws": 3.0}
+// priceRetryDelay separates the attempts to look up a new server's price.
+var priceRetryDelay = 2 * time.Second
 
 type priceEntry struct {
 	price float64
@@ -426,6 +425,7 @@ const (
 	StatusRunning       = "running"
 	StatusPaused        = "paused"
 	StatusBudget        = "budget"
+	StatusPriceUnknown  = "price_unknown" // a budget is set, but a running server's price is unknown
 	StatusNotConfigured = "not_configured"
 	StatusBackoff       = "backoff"
 )
@@ -440,6 +440,8 @@ func (a *Autoscaler) scale(ctx context.Context, st Settings, queue int, active [
 		switch state {
 		case StatusBudget:
 			a.event(ctx, "", "decision", fmt.Sprintf("monthly budget of %.2f %s reached, no new servers this month", st.MonthlyBudget, a.currency(st)), nil)
+		case StatusPriceUnknown:
+			a.event(ctx, "", "decision", "a running server's price is unknown, so the monthly budget cannot be checked: no new servers until it is known or the server is gone", nil)
 		case StatusPaused:
 			a.event(ctx, "", "decision", "autoscaler paused, no new servers", nil)
 		case StatusRunning:
@@ -506,6 +508,9 @@ func (a *Autoscaler) computeState(ctx context.Context, st Settings, now time.Tim
 	}
 	if st.MonthlyBudget > 0 && a.MonthSpend(ctx, now) >= st.MonthlyBudget {
 		return StatusBudget
+	}
+	if st.MonthlyBudget > 0 && len(a.unknownPrices(ctx, now)) > 0 {
+		return StatusPriceUnknown
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -677,13 +682,13 @@ try:
 	}
 	price, err := a.price(ctx, p, inst.Type, inst.Location, inst.Spot)
 	for i := 0; err != nil && i < 2; i++ {
-		sleep(ctx, 2*time.Second)
+		sleep(ctx, priceRetryDelay)
 		price, err = a.price(ctx, p, inst.Type, inst.Location, inst.Spot)
 	}
-	if err != nil {
-		// Never count a server as free: that would bypass the budget.
-		price = fallbackPrice[p.Name()]
-		a.event(ctx, id, "provider", fmt.Sprintf("price unknown (%v), counting %.2f %s/h for the budget", err, price, p.Currency()), nil)
+	unknown := err != nil
+	if unknown {
+		// Not counted as free either: while it runs, no new server starts (see unknownPrices).
+		a.event(ctx, id, "provider", fmt.Sprintf("price unknown (%v); asking again every minute", err), nil)
 	}
 	created := inst.CreatedAt.UnixMilli()
 	if inst.CreatedAt.IsZero() {
@@ -691,7 +696,7 @@ try:
 	}
 	a.update(ctx, id, func(c *store.CloudServer) bool {
 		c.ProviderID, c.Type, c.Location, c.Spot, c.PublicIP = inst.ID, inst.Type, inst.Location, inst.Spot, inst.PublicIP
-		c.HostKey, c.HourlyPrice, c.Currency, c.ProviderCreatedAt = hostPub, price, p.Currency(), created
+		c.HostKey, c.HourlyPrice, c.PriceUnknown, c.Currency, c.ProviderCreatedAt = hostPub, price, unknown, p.Currency(), created
 		if c.Status == store.CloudRequested { // stays draining when stopped while being created
 			c.Status = store.CloudStarting
 		}
@@ -960,7 +965,7 @@ func joinHostPort(host, port string) string {
 
 // reconcile compares the database with what the providers report: it notices
 // servers that vanished (spot interruptions, manual deletion), fills in public
-// IPs, and deletes managed servers this hub does not know.
+// IPs and missing prices, and deletes managed servers this hub does not know.
 func (a *Autoscaler) reconcile(ctx context.Context) {
 	if !a.claim("~reconcile") {
 		return
@@ -972,6 +977,7 @@ func (a *Autoscaler) reconcile(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	a.retryPrices(ctx, servers)
 	for name, p := range a.cfg.Providers {
 		insts, err := p.List(ctx)
 		if err != nil {
@@ -1054,6 +1060,11 @@ func (a *Autoscaler) Launch(ctx context.Context, n int) ([]store.CloudServer, er
 	}
 	if st.MonthlyBudget > 0 && a.MonthSpend(ctx, time.Now()) >= st.MonthlyBudget {
 		return nil, fmt.Errorf("the monthly budget is used up")
+	}
+	if st.MonthlyBudget > 0 {
+		if ids := a.unknownPrices(ctx, time.Now()); len(ids) > 0 {
+			return nil, fmt.Errorf("the price of %s is unknown, so the monthly budget cannot be checked", strings.Join(ids, ", "))
+		}
 	}
 	out := []store.CloudServer{}
 	for i := 0; i < n; i++ {
@@ -1287,6 +1298,43 @@ func (a *Autoscaler) price(ctx context.Context, p Provider, typ, loc string, spo
 	return v, nil
 }
 
+// unknownPrices lists the running servers whose price the provider could not tell.
+func (a *Autoscaler) unknownPrices(ctx context.Context, now time.Time) []string {
+	servers, err := a.store.ListCloudServers(ctx, now.UnixMilli())
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	for _, s := range servers {
+		if s.Active() && s.PriceUnknown {
+			ids = append(ids, s.ID)
+		}
+	}
+	return ids
+}
+
+// retryPrices asks again for the prices of running servers that have none yet.
+func (a *Autoscaler) retryPrices(ctx context.Context, servers []store.CloudServer) {
+	for _, s := range servers {
+		if !s.Active() || !s.PriceUnknown || s.Type == "" {
+			continue
+		}
+		p := a.provider(s.Provider)
+		if p == nil {
+			continue
+		}
+		price, err := a.price(ctx, p, s.Type, s.Location, s.Spot)
+		if err != nil {
+			continue
+		}
+		a.update(ctx, s.ID, func(c *store.CloudServer) bool {
+			c.HourlyPrice, c.PriceUnknown = price, false
+			return true
+		})
+		a.event(ctx, s.ID, "provider", fmt.Sprintf("price found: %.4f %s/h", price, p.Currency()), nil)
+	}
+}
+
 // Price is the hourly price of a type at the first configured location.
 func (a *Autoscaler) Price(ctx context.Context, provider, typ string) (float64, error) {
 	p := a.provider(provider)
@@ -1423,10 +1471,12 @@ type State struct {
 	MaxServers    int             `json:"max_servers"`
 	SpendToday    float64         `json:"spend_today"`
 	SpendMonth    float64         `json:"spend_month"`
-	Budget        float64         `json:"budget"`
-	Currency      string          `json:"currency"`
-	HubPublicKey  string          `json:"hub_public_key"`
-	SSHAllowCIDR  string          `json:"ssh_allow_cidr"`
+	// PriceUnknown counts this month's servers whose price is unknown: the spend leaves them out.
+	PriceUnknown int     `json:"price_unknown"`
+	Budget       float64 `json:"budget"`
+	Currency     string  `json:"currency"`
+	HubPublicKey string  `json:"hub_public_key"`
+	SSHAllowCIDR string  `json:"ssh_allow_cidr"`
 }
 
 func (a *Autoscaler) State(ctx context.Context) State {
@@ -1461,6 +1511,14 @@ func (a *Autoscaler) State(ctx context.Context) State {
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	s.SpendToday = a.spend(ctx, today.UnixMilli(), now.UnixMilli())
 	s.SpendMonth = a.MonthSpend(ctx, now)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).UnixMilli()
+	if month, err := a.store.ListCloudServersBetween(ctx, monthStart, now.UnixMilli()); err == nil {
+		for _, sv := range month {
+			if sv.PriceUnknown {
+				s.PriceUnknown++
+			}
+		}
+	}
 	s.Status = a.computeState(ctx, st, now)
 	switch s.Status {
 	case StatusNotConfigured:
@@ -1469,6 +1527,9 @@ func (a *Autoscaler) State(ctx context.Context) State {
 		s.StatusMessage = "Paused: no new servers are started. Running servers finish and shut down as usual."
 	case StatusBudget:
 		s.StatusMessage = "Monthly budget reached: tests run on the permanent workers only."
+	case StatusPriceUnknown:
+		s.StatusMessage = fmt.Sprintf("The price of %s is unknown, so the monthly budget cannot be checked: no new servers until the price is known (asked every minute) or the server is gone.",
+			strings.Join(a.unknownPrices(ctx, now), ", "))
 	case StatusBackoff:
 		a.mu.Lock()
 		s.StatusMessage = fmt.Sprintf("Waiting %s after a provider error: %s", roundDur(time.Until(a.backoffUntil)), a.backoffWhy)

@@ -3,6 +3,7 @@ package cloud
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -16,6 +17,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/pricing"
+	pricingtypes "github.com/aws/aws-sdk-go-v2/service/pricing/types"
 	"github.com/aws/smithy-go"
 )
 
@@ -26,18 +29,26 @@ type AWS struct {
 	AccessKeyID     string
 	SecretAccessKey string
 
-	mu         sync.Mutex
-	client     *ec2.Client
-	subnets    map[string]awsSubnet // AZ -> default subnet
-	rootDevice map[string]string    // AMI -> root device name
-	baseImage  string
-	baseAt     time.Time
-	spotPrices map[string]awsSpotPrice
+	mu             sync.Mutex
+	client         *ec2.Client
+	pricingClient  *pricing.Client
+	subnets        map[string]awsSubnet // AZ -> default subnet
+	rootDisks      map[string]awsRootDisk
+	baseImage      string
+	baseAt         time.Time
+	spotPrices     map[string]awsPrice
+	onDemandPrices map[string]awsPrice
 }
 
 type awsSubnet struct{ ID, VpcID string }
 
-type awsSpotPrice struct {
+// awsRootDisk is an AMI's root device and the size of its snapshot.
+type awsRootDisk struct {
+	Device string
+	SizeGB int
+}
+
+type awsPrice struct {
 	Price float64
 	At    time.Time
 }
@@ -58,6 +69,8 @@ const (
 	awsUbuntuOwner  = "099720109477" // Canonical
 	awsUbuntuName   = "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"
 	awsSpotCacheTTL = 10 * time.Minute
+	// List prices change rarely.
+	awsOnDemandCacheTTL = 24 * time.Hour
 )
 
 // ec2 builds the client on first use so a missing config doesn't fail at startup.
@@ -67,22 +80,50 @@ func (a *AWS) ec2(ctx context.Context) (*ec2.Client, error) {
 	if a.client != nil {
 		return a.client, nil
 	}
+	cfg, err := a.loadConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	a.client = ec2.NewFromConfig(cfg)
+	return a.client, nil
+}
+
+// pricingAPIRegion hosts the Price List API, which answers for every region.
+const pricingAPIRegion = "us-east-1"
+
+// pricing builds the Price List API client on first use.
+func (a *AWS) pricing(ctx context.Context) (*pricing.Client, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pricingClient != nil {
+		return a.pricingClient, nil
+	}
+	cfg, err := a.loadConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Region = pricingAPIRegion
+	a.pricingClient = pricing.NewFromConfig(cfg)
+	return a.pricingClient, nil
+}
+
+// loadConfig is called with a.mu held.
+func (a *AWS) loadConfig(ctx context.Context) (aws.Config, error) {
 	opts := []func(*config.LoadOptions) error{config.WithRegion(a.Region)}
 	if a.AccessKeyID != "" && a.SecretAccessKey != "" {
 		opts = append(opts, config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(a.AccessKeyID, a.SecretAccessKey, "")))
 	}
 	cfg, err := config.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("aws config: %v: %w", err, ErrNotConfigured)
+		return aws.Config{}, fmt.Errorf("aws config: %v: %w", err, ErrNotConfigured)
 	}
 	if cfg.Credentials == nil {
-		return nil, ErrNotConfigured
+		return aws.Config{}, ErrNotConfigured
 	}
 	if _, err := cfg.Credentials.Retrieve(ctx); err != nil {
-		return nil, fmt.Errorf("aws credentials: %v: %w", err, ErrNotConfigured)
+		return aws.Config{}, fmt.Errorf("aws credentials: %v: %w", err, ErrNotConfigured)
 	}
-	a.client = ec2.NewFromConfig(cfg)
-	return a.client, nil
+	return cfg, nil
 }
 
 // ── errors ──────────────────────────────────────────────────────────────────
@@ -352,31 +393,50 @@ func (a *AWS) subnet(ctx context.Context, c *ec2.Client, az string) (awsSubnet, 
 	return s, nil
 }
 
-func (a *AWS) imageRootDevice(ctx context.Context, c *ec2.Client, image string) (string, error) {
+func (a *AWS) imageRootDisk(ctx context.Context, c *ec2.Client, image string) (awsRootDisk, error) {
 	a.mu.Lock()
-	dev, ok := a.rootDevice[image]
+	d, ok := a.rootDisks[image]
 	a.mu.Unlock()
 	if ok {
-		return dev, nil
+		return d, nil
 	}
 	res, err := c.DescribeImages(ctx, &ec2.DescribeImagesInput{ImageIds: []string{image}})
 	if err != nil {
-		return "", awsError("describe image", err)
+		return d, awsError("describe image", err)
 	}
 	if len(res.Images) == 0 {
-		return "", fmt.Errorf("aws: image %s not found", image)
+		return d, fmt.Errorf("aws: image %s not found", image)
 	}
-	dev = aws.ToString(res.Images[0].RootDeviceName)
-	if dev == "" {
-		dev = "/dev/sda1"
-	}
+	d = rootDiskOf(&res.Images[0])
 	a.mu.Lock()
-	if a.rootDevice == nil {
-		a.rootDevice = map[string]string{}
+	if a.rootDisks == nil {
+		a.rootDisks = map[string]awsRootDisk{}
 	}
-	a.rootDevice[image] = dev
+	a.rootDisks[image] = d
 	a.mu.Unlock()
-	return dev, nil
+	return d, nil
+}
+
+func rootDiskOf(i *types.Image) awsRootDisk {
+	d := awsRootDisk{Device: aws.ToString(i.RootDeviceName)}
+	if d.Device == "" {
+		d.Device = "/dev/sda1"
+	}
+	for _, b := range i.BlockDeviceMappings {
+		if aws.ToString(b.DeviceName) == d.Device && b.Ebs != nil {
+			d.SizeGB = int(aws.ToInt32(b.Ebs.VolumeSize))
+		}
+	}
+	return d
+}
+
+// rootDiskGB is the requested size, but never below the image's snapshot:
+// AWS refuses to start a server with a root disk smaller than its snapshot.
+func rootDiskGB(requested int, image awsRootDisk) int {
+	if requested <= 0 {
+		requested = 60
+	}
+	return max(requested, image.SizeGB)
 }
 
 func (a *AWS) Create(ctx context.Context, r CreateRequest) (*Instance, error) {
@@ -403,14 +463,11 @@ func (a *AWS) Create(ctx context.Context, r CreateRequest) (*Instance, error) {
 	if sg == nil {
 		return nil, fmt.Errorf("aws: security group %s is missing, run Prepare first", sgName(r.Labels[LabelHub]))
 	}
-	rootDev, err := a.imageRootDevice(ctx, c, image)
+	root, err := a.imageRootDisk(ctx, c, image)
 	if err != nil {
 		return nil, err
 	}
-	disk := r.DiskGB
-	if disk <= 0 {
-		disk = 60
-	}
+	disk := rootDiskGB(r.DiskGB, root)
 	labels := make(map[string]string, len(r.Labels)+1)
 	for k, v := range r.Labels {
 		labels[k] = v
@@ -428,7 +485,7 @@ func (a *AWS) Create(ctx context.Context, r CreateRequest) (*Instance, error) {
 			SecurityGroupIds: []string{aws.ToString(sg.GroupId)},
 			UserData:         aws.String(base64.StdEncoding.EncodeToString([]byte(r.UserData))),
 			BlockDeviceMappings: []types.BlockDeviceMapping{{
-				DeviceName: aws.String(rootDev),
+				DeviceName: aws.String(root.Device),
 				Ebs: &types.EbsBlockDevice{
 					VolumeSize:          aws.Int32(int32(disk)),
 					VolumeType:          types.VolumeTypeGp3,
@@ -511,26 +568,9 @@ func (a *AWS) List(ctx context.Context) ([]Instance, error) {
 
 // ── prices ──────────────────────────────────────────────────────────────────
 
-// Linux on-demand USD/hour. Approximate list prices; update when AWS changes them.
-var awsOnDemandPrices = map[string]map[string]float64{
-	"eu-central-1": {
-		"c7a.2xlarge": 0.4704,
-		"c7a.4xlarge": 0.9408,
-		"c7a.8xlarge": 1.8816,
-		"c6a.4xlarge": 0.6984,
-		"c7i.4xlarge": 0.8148,
-		"c6i.4xlarge": 0.776,
-		"m7a.4xlarge": 1.1128,
-		"m6a.4xlarge": 0.8288,
-	},
-}
-
 func (a *AWS) HourlyPrice(ctx context.Context, serverType, location string, spot bool) (float64, error) {
 	if !spot {
-		if p, ok := awsOnDemandPrices[a.Region][serverType]; ok {
-			return p, nil
-		}
-		return 0, fmt.Errorf("aws: no on-demand price known for %s in %s", serverType, a.Region)
+		return a.onDemandPrice(ctx, serverType)
 	}
 	key := serverType + "|" + location
 	a.mu.Lock()
@@ -571,11 +611,90 @@ func (a *AWS) HourlyPrice(ctx context.Context, serverType, location string, spot
 	}
 	a.mu.Lock()
 	if a.spotPrices == nil {
-		a.spotPrices = map[string]awsSpotPrice{}
+		a.spotPrices = map[string]awsPrice{}
 	}
-	a.spotPrices[key] = awsSpotPrice{Price: price, At: time.Now()}
+	a.spotPrices[key] = awsPrice{Price: price, At: time.Now()}
 	a.mu.Unlock()
 	return price, nil
+}
+
+// onDemandPrice asks the Price List API for the Linux on-demand price in a.Region.
+// There is no built-in fallback: an unknown price stays unknown (see Autoscaler.unknownPrices).
+func (a *AWS) onDemandPrice(ctx context.Context, serverType string) (float64, error) {
+	a.mu.Lock()
+	cached, ok := a.onDemandPrices[serverType]
+	a.mu.Unlock()
+	if ok && time.Since(cached.At) < awsOnDemandCacheTTL {
+		return cached.Price, nil
+	}
+	price, err := a.lookupOnDemandPrice(ctx, serverType)
+	if err != nil {
+		return 0, fmt.Errorf("aws: on-demand price of %s in %s: %w", serverType, a.Region, err)
+	}
+	a.mu.Lock()
+	if a.onDemandPrices == nil {
+		a.onDemandPrices = map[string]awsPrice{}
+	}
+	a.onDemandPrices[serverType] = awsPrice{Price: price, At: time.Now()}
+	a.mu.Unlock()
+	return price, nil
+}
+
+func (a *AWS) lookupOnDemandPrice(ctx context.Context, serverType string) (float64, error) {
+	c, err := a.pricing(ctx)
+	if err != nil {
+		return 0, err
+	}
+	match := func(field, value string) pricingtypes.Filter {
+		return pricingtypes.Filter{Type: pricingtypes.FilterTypeTermMatch, Field: aws.String(field), Value: aws.String(value)}
+	}
+	res, err := c.GetProducts(ctx, &pricing.GetProductsInput{
+		ServiceCode: aws.String("AmazonEC2"),
+		Filters: []pricingtypes.Filter{
+			match("regionCode", a.Region),
+			match("instanceType", serverType),
+			match("operatingSystem", "Linux"),
+			match("tenancy", "Shared"),
+			match("preInstalledSw", "NA"),
+			match("licenseModel", "No License required"),
+			match("capacitystatus", "Used"),
+		},
+		MaxResults: aws.Int32(10),
+	})
+	if err != nil {
+		return 0, awsError("price list", err)
+	}
+	return parseOnDemandPrice(res.PriceList)
+}
+
+// parseOnDemandPrice reads the hourly USD price from Price List API products.
+func parseOnDemandPrice(products []string) (float64, error) {
+	for _, raw := range products {
+		var p struct {
+			Terms struct {
+				OnDemand map[string]struct {
+					PriceDimensions map[string]struct {
+						Unit         string            `json:"unit"`
+						PricePerUnit map[string]string `json:"pricePerUnit"`
+					} `json:"priceDimensions"`
+				} `json:"OnDemand"`
+			} `json:"terms"`
+		}
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			return 0, fmt.Errorf("aws: bad price list entry: %w", err)
+		}
+		for _, term := range p.Terms.OnDemand {
+			for _, dim := range term.PriceDimensions {
+				if dim.Unit != "Hrs" {
+					continue
+				}
+				if v, err := strconv.ParseFloat(dim.PricePerUnit["USD"], 64); err == nil && v > 0 {
+					return v, nil
+				}
+			}
+		}
+	}
+	return 0, errors.New("aws: the price list has no on-demand price")
 }
 
 func (a *AWS) ValidateType(ctx context.Context, serverType string) error {
@@ -735,7 +854,7 @@ func (a *AWS) DeleteImage(ctx context.Context, id string) error {
 		}
 	}
 	a.mu.Lock()
-	delete(a.rootDevice, id)
+	delete(a.rootDisks, id)
 	a.mu.Unlock()
 	return nil
 }

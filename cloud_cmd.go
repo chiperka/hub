@@ -69,6 +69,7 @@ func runCloudCommand(args []string) int {
 		loc := fs.String("location", "", "builder location (default nbg1 / eu-central-1a)")
 		worker := fs.String("worker-image", env("CHIPERKA_WORKER_IMAGE", "finie/chiperka-worker:latest"), "worker image to bake in")
 		keep := fs.Int("keep", 2, "images to keep")
+		disk := fs.Int("disk-gb", cloud.DefaultImageDiskGB, "AWS: builder disk, the minimum disk of servers started from the image")
 		cidr := fs.String("ssh-cidr", "", "AWS: create/update the security group first, allowing SSH from this range")
 		var images listFlag
 		fs.Var(&images, "image", "extra image to pre-pull (repeatable), e.g. test images from master")
@@ -79,7 +80,7 @@ func runCloudCommand(args []string) int {
 			return 2
 		}
 		o := cloud.BuildImageOptions{
-			Type: *typ, Location: *loc, WorkerImage: *worker, Images: images, Keep: *keep, SSHAllowCIDR: *cidr,
+			Type: *typ, Location: *loc, WorkerImage: *worker, Images: images, Keep: *keep, DiskGB: *disk, SSHAllowCIDR: *cidr,
 			Registry: os.Getenv("CHIPERKA_REGISTRY_HOST"), RegistryUser: os.Getenv("CHIPERKA_REGISTRY_USER"),
 			RegistryPassword: os.Getenv("CHIPERKA_REGISTRY_PASSWORD"),
 		}

@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS cloud_servers (
 	worker_id           TEXT NOT NULL DEFAULT '',
 	host_key            TEXT NOT NULL DEFAULT '',
 	hourly_price        REAL NOT NULL DEFAULT 0,
+	price_unknown       INTEGER NOT NULL DEFAULT 0,
 	currency            TEXT NOT NULL DEFAULT '',
 	manual              INTEGER NOT NULL DEFAULT 0,
 	hold_until          INTEGER NOT NULL DEFAULT 0,
@@ -82,6 +83,7 @@ type CloudServer struct {
 	WorkerID          string  `json:"worker_id"`
 	HostKey           string  `json:"-"` // pinned SSH host key (authorized_keys format)
 	HourlyPrice       float64 `json:"hourly_price"`
+	PriceUnknown      bool    `json:"price_unknown"` // the provider could not tell the price; not counted in spend
 	Currency          string  `json:"currency"`
 	Manual            bool    `json:"manual"`
 	HoldUntil         int64   `json:"hold_until"`
@@ -100,12 +102,12 @@ type CloudServer struct {
 // Active reports whether the server still exists (or is about to) at the provider.
 func (c *CloudServer) Active() bool { return c.Status != CloudDeleted && c.Status != CloudFailed }
 
-const cloudCols = `id,provider,provider_id,type,location,spot,public_ip,status,reason,end_reason,worker_id,host_key,hourly_price,currency,
+const cloudCols = `id,provider,provider_id,type,location,spot,public_ip,status,reason,end_reason,worker_id,host_key,hourly_price,price_unknown,currency,
 	manual,hold_until,created_at,provider_created_at,boot_at,tunnel_at,worker_at,first_test_at,idle_since,drain_at,deleted_at,completed_jobs`
 
 func (c *CloudServer) fields() []any {
 	return []any{&c.ID, &c.Provider, &c.ProviderID, &c.Type, &c.Location, &c.Spot, &c.PublicIP, &c.Status, &c.Reason, &c.EndReason,
-		&c.WorkerID, &c.HostKey, &c.HourlyPrice, &c.Currency, &c.Manual, &c.HoldUntil, &c.CreatedAt, &c.ProviderCreatedAt,
+		&c.WorkerID, &c.HostKey, &c.HourlyPrice, &c.PriceUnknown, &c.Currency, &c.Manual, &c.HoldUntil, &c.CreatedAt, &c.ProviderCreatedAt,
 		&c.BootAt, &c.TunnelAt, &c.WorkerAt, &c.FirstTestAt, &c.IdleSince, &c.DrainAt, &c.DeletedAt, &c.CompletedJobs}
 }
 
