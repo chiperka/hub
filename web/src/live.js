@@ -12,7 +12,7 @@ function dispatch(name, data) {
   for (const fn of listeners.get('*') || []) fn(name, data)
 }
 
-const EVENTS = ['hello', 'runs', 'workers', 'queue', 'test_update', 'step_update', 'test_log', 'run_update', 'run_completed', 'run_cancelled', 'artifact']
+const EVENTS = ['hello', 'runs', 'workers', 'queue', 'test_update', 'step_update', 'test_log', 'run_update', 'run_completed', 'run_cancelled', 'artifact', 'cloud']
 
 function connect() {
   if (es) es.close()

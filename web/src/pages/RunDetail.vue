@@ -5,6 +5,7 @@ import { Square, RotateCcw, Download, Trash2, Search, ChevronRight, FileText, Fi
 import { api } from '../api'
 import { onLive, refreshOn, watchRun } from '../live'
 import { ago, dateTime, duration, runDuration } from '../format'
+import { money } from '../cloud'
 import PageHeader from '../components/PageHeader.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import StatusIcon from '../components/StatusIcon.vue'
@@ -20,6 +21,16 @@ const filter = ref('all')
 const q = ref('')
 const confirmDelete = ref(false)
 const tick = ref(0)
+const cloudUse = ref(null)
+
+async function loadCloudUse() {
+  try {
+    const u = await api.get(`/api/cloud/runs/${props.id}`)
+    cloudUse.value = u.servers.length ? u : null
+  } catch { cloudUse.value = null }
+}
+onMounted(loadCloudUse)
+refreshOn(['run_completed'], loadCloudUse, 1000)
 
 async function load() {
   try {
@@ -135,6 +146,9 @@ async function del() {
           <span v-if="run.version">cli {{ run.version }}</span>
           <span v-if="run.rerun_of">re-run of <router-link class="link font-mono" :to="`/runs/${run.rerun_of}`">{{ run.rerun_of }}</router-link></span>
           <span v-if="!run.snapshots_ready" class="text-amber-300">waiting for snapshot upload…</span>
+          <router-link v-if="cloudUse" to="/cloud" class="hover:text-ink-200" :title="cloudUse.servers.map((s) => `${s.id} (${s.type}): ${s.jobs} tests`).join('\n')">
+            on <span class="text-ink-200">{{ cloudUse.servers.length }}</span> cloud server{{ cloudUse.servers.length > 1 ? 's' : '' }} · {{ cloudUse.jobs }} tests · ~<span class="font-mono text-ink-200">{{ money(cloudUse.cost, cloudUse.currency) }}</span>
+          </router-link>
         </div>
       </template>
       <button v-if="!run.completed_at" class="btn btn-danger" @click="stop"><Square class="h-4 w-4" />Stop</button>

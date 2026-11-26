@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { LayoutDashboard, PlayCircle, ListOrdered, Server, FolderKanban, Plug, Settings, LogOut, Menu, X } from 'lucide-vue-next'
+import { LayoutDashboard, PlayCircle, ListOrdered, Server, Cloud, FolderKanban, Plug, Settings, LogOut, Menu, X } from 'lucide-vue-next'
 import { api, session } from './api'
 import { connected, startLive } from './live'
 import Toasts from './components/Toasts.vue'
@@ -19,6 +19,7 @@ const nav = [
   { to: '/runs', label: 'Runs', icon: PlayCircle },
   { to: '/queue', label: 'Queue', icon: ListOrdered },
   { to: '/workers', label: 'Workers', icon: Server },
+  { to: '/cloud', label: 'Cloud', icon: Cloud },
   { to: '/projects', label: 'Projects', icon: FolderKanban },
   { to: '/connect', label: 'Connect CLI', icon: Plug },
   { to: '/settings', label: 'Settings', icon: Settings },

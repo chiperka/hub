@@ -1,0 +1,49 @@
+# Scheduled jobs for cloud workers on demand, to include in the CI of the
+# project whose tests run on the hub. Create two pipeline schedules with the
+# variable CHIPERKA_CLOUD_JOB set to "janitor" (every 30 minutes) and "image"
+# (weekly, and after a new worker release).
+#
+# CI/CD variables (masked, protected), separate from the hub's own credentials:
+#   CHIPERKA_CLOUD_HETZNER_TOKEN
+#   CHIPERKA_CLOUD_AWS_ACCESS_KEY_ID, CHIPERKA_CLOUD_AWS_SECRET_ACCESS_KEY
+
+# Deletes Chiperka servers older than 5 hours at every configured provider,
+# even when the hub is down.
+Chiperka Cloud Janitor:
+  image:
+    name: finie/chiperka-hub:latest
+    entrypoint: [""]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $CHIPERKA_CLOUD_JOB == "janitor"'
+  script:
+    - chiperka-hub cloud janitor --max-age 5h
+
+# Rebuilds the server image (Docker + worker + the current test images from the
+# default branch) so new servers start in about a minute. Keeps the two newest.
+Chiperka Cloud Image:
+  image:
+    name: finie/chiperka-hub:latest
+    entrypoint: [""]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $CHIPERKA_CLOUD_JOB == "image"'
+  timeout: 1h
+  variables:
+    # The builder logs in to pull the test images and logs out before the snapshot.
+    CHIPERKA_REGISTRY_HOST: $CI_REGISTRY
+    CHIPERKA_REGISTRY_USER: $CI_REGISTRY_USER
+    CHIPERKA_REGISTRY_PASSWORD: $CI_REGISTRY_PASSWORD
+  parallel:
+    matrix:
+      - PROVIDER: [hetzner, aws]
+  script:
+    # Skip a provider without credentials.
+    - |
+      if [ "$PROVIDER" = hetzner ] && [ -z "$CHIPERKA_CLOUD_HETZNER_TOKEN" ]; then exit 0; fi
+      if [ "$PROVIDER" = aws ] && [ -z "$CHIPERKA_CLOUD_AWS_ACCESS_KEY_ID" ]; then exit 0; fi
+    # Adjust the list to the images your tests use. Pre-pulled layers make the
+    # per-commit images download only what changed. Here: images built for the
+    # commit the schedule runs on (the default branch), tagged <sha>-<name>.
+    - >
+      chiperka-hub cloud build-image --provider "$PROVIDER"
+      --image "$CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG:$CI_COMMIT_SHA-php-test"
+      --image "$CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG:$CI_COMMIT_SHA-nginx"

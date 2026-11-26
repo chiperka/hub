@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"chiperka-hub/internal/cloud"
 	"chiperka-hub/internal/store"
 )
 
@@ -37,6 +38,7 @@ type Server struct {
 	hub      *Hub
 	notifier *Notifier
 	registry *registryAuths
+	cloud    *cloud.Autoscaler
 	ui       fs.FS
 	log      *slog.Logger
 }
@@ -50,17 +52,8 @@ func New(cfg Config, st *store.Store, ui fs.FS) *Server {
 
 func (s *Server) Store() *store.Store { return s.store }
 
-// Handler builds the HTTP routing table.
-func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-
-	// Public
-	mux.HandleFunc("GET /health", s.handleHealth)
-	mux.HandleFunc("GET /api/auth/state", s.handleAuthState)
-	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
-	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
-	mux.HandleFunc("POST /api/auth/setup", s.handleSetup)
-
+// workerRoutes registers the worker protocol.
+func (s *Server) workerRoutes(mux *http.ServeMux) {
 	// Worker protocol (worker token)
 	mux.HandleFunc("POST /api/workers/register", s.handleWorkerRegister)
 	mux.HandleFunc("POST /api/workers/heartbeat", s.workerAuth(s.handleWorkerHeartbeat))
@@ -72,6 +65,34 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/artifacts", s.jobAuth(s.handleJobArtifact))
 	mux.HandleFunc("GET /api/jobs/{id}/files/{path...}", s.jobAuth(s.handleJobFile))
 	mux.HandleFunc("POST /api/jobs/{id}/complete", s.jobAuth(s.handleJobComplete))
+}
+
+// WorkerHandler serves only the worker protocol. Cloud servers reach the hub
+// through their tunnel here: a compromised server must not get the UI/admin
+// API (which needs no login with CHIPERKA_AUTH=disabled), and it cannot join
+// new workers without a token.
+func (s *Server) WorkerHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", s.handleHealth)
+	s.workerRoutes(mux)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { writeError(w, http.StatusNotFound, "not found") })
+	return s.logRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxTunnel, true)))
+	}))
+}
+
+// Handler builds the HTTP routing table.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+
+	// Public
+	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /api/auth/state", s.handleAuthState)
+	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	mux.HandleFunc("POST /api/auth/setup", s.handleSetup)
+
+	s.workerRoutes(mux)
 
 	// CLI protocol + UI (session or API token)
 	u := func(pattern string, h http.HandlerFunc) { mux.HandleFunc(pattern, s.userAuth(h)) }
@@ -126,6 +147,8 @@ func (s *Server) Handler() http.Handler {
 	u("DELETE /api/users/{id}", s.handleUserDelete)
 
 	// Results API (CLI MCP drill-down, shapes match chiperka internal/result)
+	s.cloudRoutes(u)
+
 	u("GET /api/results/runs", s.handleResultsRuns)
 	u("GET /api/results/runs/{id}", s.handleResultsRun)
 	u("GET /api/results/tests/{uuid}", s.handleResultsTest)

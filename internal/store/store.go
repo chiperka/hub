@@ -178,7 +178,7 @@ func Open(path string) (*Store, error) {
 	// A single connection serialises all writes and avoids SQLITE_BUSY entirely.
 	// The workload (a handful of workers + UI) is far below what this can serve.
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + cloudSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
