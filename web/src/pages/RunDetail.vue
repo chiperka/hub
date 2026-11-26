@@ -147,7 +147,7 @@ async function del() {
           <span v-if="run.rerun_of">re-run of <router-link class="link font-mono" :to="`/runs/${run.rerun_of}`">{{ run.rerun_of }}</router-link></span>
           <span v-if="!run.snapshots_ready" class="text-amber-300">waiting for snapshot upload…</span>
           <router-link v-if="cloudUse" to="/cloud" class="hover:text-ink-200" :title="cloudUse.servers.map((s) => `${s.id} (${s.type}): ${s.jobs} tests`).join('\n')">
-            on <span class="text-ink-200">{{ cloudUse.servers.length }}</span> cloud server{{ cloudUse.servers.length > 1 ? 's' : '' }} · {{ cloudUse.jobs }} tests · ~<span class="font-mono text-ink-200">{{ money(cloudUse.cost, cloudUse.currency) }}</span>
+            on <span class="text-ink-200">{{ cloudUse.servers.length }}</span> cloud server{{ cloudUse.servers.length > 1 ? 's' : '' }} · {{ cloudUse.jobs }} tests · <template v-if="cloudUse.price_unknown === cloudUse.servers.length">price unknown</template><template v-else>~<span class="font-mono text-ink-200">{{ money(cloudUse.cost, cloudUse.currency) }}</span><template v-if="cloudUse.price_unknown"> + {{ cloudUse.price_unknown }} of unknown price</template></template>
           </router-link>
         </div>
       </template>

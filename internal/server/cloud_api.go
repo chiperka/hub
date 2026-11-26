@@ -466,12 +466,16 @@ func (s *Server) handleCloudRunUsage(w http.ResponseWriter, r *http.Request) {
 		Jobs       int     `json:"jobs"`
 		DurationMs int64   `json:"duration_ms"`
 		Cost       float64 `json:"cost"`
+		// PriceUnknown: the server's price is unknown, Cost is 0 and the total leaves it out.
+		PriceUnknown bool `json:"price_unknown"`
 	}
 	out := struct {
 		Servers  []srv   `json:"servers"`
 		Jobs     int     `json:"jobs"`
 		Cost     float64 `json:"cost"`
 		Currency string  `json:"currency"`
+		// PriceUnknown counts servers left out of Cost.
+		PriceUnknown int `json:"price_unknown"`
 	}{Servers: []srv{}}
 	conc := s.cloud.Settings().WorkerConcurrency
 	for _, u := range usage {
@@ -481,7 +485,10 @@ func (s *Server) handleCloudRunUsage(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		cost := float64(u.DurationMs) / float64(time.Hour/time.Millisecond) / float64(max(conc, 1)) * c.HourlyPrice
-		out.Servers = append(out.Servers, srv{ID: c.ID, Type: c.Type, Provider: c.Provider, Jobs: u.Jobs, DurationMs: u.DurationMs, Cost: cost})
+		out.Servers = append(out.Servers, srv{ID: c.ID, Type: c.Type, Provider: c.Provider, Jobs: u.Jobs, DurationMs: u.DurationMs, Cost: cost, PriceUnknown: c.PriceUnknown})
+		if c.PriceUnknown {
+			out.PriceUnknown++
+		}
 		out.Jobs += u.Jobs
 		out.Cost += cost
 		out.Currency = c.Currency

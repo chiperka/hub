@@ -333,6 +333,7 @@ const dayNames = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']
             <label class="label">Disk size (GB)</label>
             <input v-model="form.disk_gb" type="number" min="20" class="input" />
             <p v-if="form.provider === 'hetzner'" class="mt-1 text-xs text-ink-500">Hetzner disks come with the server type; this applies to AWS.</p>
+            <p v-else class="mt-1 text-xs text-ink-500">Never less than the server image's disk.</p>
           </div>
         </div>
       </section>

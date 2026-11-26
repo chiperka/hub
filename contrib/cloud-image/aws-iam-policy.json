@@ -111,6 +111,12 @@
       "Condition": {"StringEquals": {"aws:ResourceTag/chiperka-managed": "true"}}
     },
     {
+      "Sid": "OnDemandPrices",
+      "Effect": "Allow",
+      "Action": "pricing:GetProducts",
+      "Resource": "*"
+    },
+    {
       "Sid": "SpotServiceLinkedRole",
       "Effect": "Allow",
       "Action": "iam:CreateServiceLinkedRole",

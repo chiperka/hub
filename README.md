@@ -149,6 +149,10 @@ chiperka-hub cloud build-image --provider hetzner --image registry.example.com/a
 
 `contrib/cloud-image/gitlab-ci.yml` has ready-made scheduled jobs for both commands.
 
+On AWS the image's disk (`--disk-gb`, 30 GB by default) is the minimum disk of servers started from it: a smaller disk size in the settings is raised to it. Pass `--type` and `--location` when the default builder (`c7a.large` in `eu-central-1a`) is not available in your region or plan.
+
+**Prices.** The hub asks the provider: Hetzner's API, the AWS Price List API for on-demand servers (`pricing:GetProducts`, part of the IAM policy) and EC2 for spot. When it cannot find out a server's price, it says "price unknown" instead of guessing, leaves the server out of the spend and asks again every minute. While such a server runs and a monthly budget is set, no new servers start, because the budget cannot be checked.
+
 **Trying it locally.** `CHIPERKA_CLOUD_DEV_DOCKER=hetzner` (with `CHIPERKA_CLOUD_DEV_HUB_URL=http://host.docker.internal:8080`) makes every "server" a worker container on your local Docker daemon. You can try the rules, the UI and the lifecycle without credentials. Development only.
 
 ## How it works
