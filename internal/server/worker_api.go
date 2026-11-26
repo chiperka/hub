@@ -84,6 +84,9 @@ func (s *Server) handleWorkerRegister(w http.ResponseWriter, r *http.Request) {
 // presents the configured join token, or — in trusted mode without a join
 // token — no token at all.
 func (s *Server) canJoin(r *http.Request) bool {
+	if tunneled, _ := r.Context().Value(ctxTunnel).(bool); tunneled {
+		return false // cloud workers always come with their own token
+	}
 	tok := bearer(r)
 	if s.cfg.WorkerJoinToken != "" {
 		return subtle.ConstantTimeCompare([]byte(tok), []byte(s.cfg.WorkerJoinToken)) == 1

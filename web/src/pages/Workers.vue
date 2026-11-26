@@ -79,6 +79,7 @@ async function rename() {
           <div class="flex items-center gap-2">
             <span class="truncate font-semibold">{{ w.name }}</span>
             <span v-if="w.is_local" class="rounded bg-indigo-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase text-indigo-300">embedded</span>
+            <router-link v-if="w.id.startsWith('wc-')" to="/cloud" class="rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase text-sky-300 hover:bg-sky-500/25" :title="`Runs on cloud server ${w.name}`">cloud · {{ w.name }}</router-link>
           </div>
           <div class="truncate font-mono text-xs text-ink-400">{{ w.id }}<template v-if="w.hostname"> · {{ w.hostname }}</template></div>
         </div>

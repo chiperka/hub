@@ -19,6 +19,7 @@ type ctxKey int
 const (
 	ctxPrincipal ctxKey = iota
 	ctxWorker
+	ctxTunnel // request came through a cloud server's tunnel
 )
 
 // Principal identifies who is calling the user-facing API.

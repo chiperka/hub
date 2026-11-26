@@ -3,14 +3,15 @@ import { reactive } from 'vue'
 export const session = reactive({ loaded: false, authenticated: false, authDisabled: false, setupRequired: false, principal: null, version: '' })
 
 export class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, body) {
     super(message)
     this.status = status
+    this.body = body
   }
 }
 
-async function request(method, url, body) {
-  const opts = { method, headers: {}, credentials: 'same-origin' }
+async function request(method, url, body, headers = {}) {
+  const opts = { method, headers: { ...headers }, credentials: 'same-origin' }
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json'
     opts.body = JSON.stringify(body)
@@ -24,7 +25,7 @@ async function request(method, url, body) {
   if (res.status === 204) return null
   const ct = res.headers.get('content-type') || ''
   const data = ct.includes('application/json') ? await res.json() : await res.text()
-  if (!res.ok) throw new ApiError(res.status, (data && data.error) || res.statusText)
+  if (!res.ok) throw new ApiError(res.status, (data && data.error) || res.statusText, data)
   return data
 }
 
@@ -32,6 +33,7 @@ export const api = {
   get: (url) => request('GET', url),
   post: (url, body) => request('POST', url, body ?? {}),
   patch: (url, body) => request('PATCH', url, body),
+  put: (url, body, headers) => request('PUT', url, body, headers),
   del: (url) => request('DELETE', url),
 }
 

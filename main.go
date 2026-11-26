@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"chiperka-hub/internal/cloud"
 	"chiperka-hub/internal/server"
 	"chiperka-hub/internal/store"
 	"chiperka-hub/web"
@@ -54,6 +55,9 @@ func envInt(key string, def int) int {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "cloud" {
+		os.Exit(runCloudCommand(os.Args[2:]))
+	}
 	addr := flag.String("addr", env("CHIPERKA_ADDR", ":8080"), "listen address (CHIPERKA_ADDR)")
 	dataDir := flag.String("data", env("CHIPERKA_DATA_DIR", "./data"), "data directory (CHIPERKA_DATA_DIR)")
 	showVersion := flag.Bool("version", false, "print version")
@@ -104,6 +108,32 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Cloud workers on demand: active only with provider credentials.
+	providers := cloudProviders()
+	// Cloud servers' tunnels end on a loopback listener that serves only the
+	// worker protocol, not the UI/admin API.
+	workerLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		log.Error("cannot open the listener for cloud workers", "err", err)
+		os.Exit(1)
+	}
+	workerSrv := &http.Server{Handler: srv.WorkerHandler(), ReadHeaderTimeout: 10 * time.Second}
+	go workerSrv.Serve(workerLn)
+	defer workerSrv.Close()
+
+	scaler, err := cloud.New(ctx, cloud.Config{
+		DataDir:     *dataDir,
+		HubAddr:     workerLn.Addr().String(),
+		WorkerImage: env("CHIPERKA_WORKER_IMAGE", "finie/chiperka-worker:latest"),
+		TestTimeout: jobTimeout,
+		Providers:   providers,
+	}, st, srv.CloudHooks())
+	if err != nil {
+		log.Error("cannot start the cloud autoscaler", "err", err)
+		os.Exit(1)
+	}
+	srv.SetCloud(scaler)
+
 	httpSrv := &http.Server{Addr: *addr, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
@@ -122,10 +152,22 @@ func main() {
 	}
 
 	go srv.RunMonitor(ctx)
+	if scaler.Configured() {
+		log.Info("cloud autoscaler enabled", "providers", strings.Join(mapKeys(providers), ","))
+		go scaler.Run(ctx)
+	}
 
 	<-ctx.Done()
 	log.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	httpSrv.Shutdown(shutdownCtx)
+}
+
+func mapKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

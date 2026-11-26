@@ -98,8 +98,58 @@ Notes:
 | `CHIPERKA_WORKER_IMAGE` | `finie/chiperka-worker:latest` | Worker image shown in "Add worker" commands |
 | `CHIPERKA_JOB_TIMEOUT` | `300s` | Per-test timeout |
 | `CHIPERKA_RETENTION_DAYS` | `30` | Delete finished runs older than this (`0` = keep forever) |
+| `CHIPERKA_CLOUD_HETZNER_TOKEN` | – | Enables cloud workers on Hetzner (see [Cloud workers on demand](#cloud-workers-on-demand)) |
+| `CHIPERKA_CLOUD_AWS_ACCESS_KEY_ID`, `CHIPERKA_CLOUD_AWS_SECRET_ACCESS_KEY`, `CHIPERKA_CLOUD_AWS_REGION` | –, –, `eu-central-1` | Enables cloud workers on AWS |
 
 When running behind a reverse proxy, make sure it doesn't buffer `/api/events/*`, which is a server-sent events stream.
+
+## Cloud workers on demand
+
+For big runs the hub can rent servers from **Hetzner Cloud** or **AWS EC2**, spread the run across them and return them when the queue is empty. You pay only while tests run. Without provider credentials the hub behaves exactly as before.
+
+```bash
+CHIPERKA_CLOUD_HETZNER_TOKEN=…            # API token of a Hetzner project used only by Chiperka
+CHIPERKA_CLOUD_AWS_ACCESS_KEY_ID=…        # IAM user limited by contrib/cloud-image/aws-iam-policy.json
+CHIPERKA_CLOUD_AWS_SECRET_ACCESS_KEY=…
+CHIPERKA_CLOUD_AWS_REGION=eu-central-1
+```
+
+Everything else is set in the UI under **Cloud → Settings**, at runtime: the provider, rules (“at least 300 tests waiting → 4 servers”), the server cap, the monthly budget, idle and lifetime limits, server types with fallbacks, an optional warm pool and the IP address SSH may come from. Changes apply within 5 seconds. Each one is logged and can be reverted. The **Cloud** page shows every server live: its state, how long each start-up step took, its tests, why it exists, why it is going away and what it costs.
+
+**How servers connect.** The hub can stay behind a VPN with no inbound ports:
+
+- The provider firewall lets SSH in only from the hub's public IP.
+- The hub generates a host key for each server and pins it.
+- The hub logs in with its own key (`DATA_DIR/cloud/hub_ed25519`). That key may only open one reverse tunnel: no shell and no other forwards.
+- The worker on the server talks to the hub through that tunnel at `127.0.0.1:18080`.
+- Each server's worker gets its own token and is named after the server.
+- Test containers cannot reach the cloud metadata service.
+
+**When servers start and stop:**
+
+- **Start.** Servers start when the queue of pending tests stays above a rule for the scale-up delay. Servers that are already running count towards the rule. Small runs stay on your permanent workers.
+- **Shutdown.** Once idle, the worker is paused, running tests finish (or are re-queued after a timeout), then the server is deleted.
+  - **Hetzner** bills every started hour. An idle Hetzner server is kept until shortly before its paid hour ends, so the next run can use it for free.
+  - **AWS** bills by the second. An AWS server goes after the idle time, and spot servers fall back to on-demand when capacity is missing.
+
+**Safety nets against forgotten servers:**
+
+- The hub deletes servers after idle time and after a maximum lifetime.
+- It deletes servers whose worker never signs in.
+- Every minute it reconciles with the provider and deletes managed servers it has no record of.
+- It enforces a monthly budget.
+- Every server powers itself off after 5 hours. AWS then terminates it.
+- `chiperka-hub cloud janitor` deletes servers older than 5 hours even when the hub is down. Run it on a schedule.
+
+**Server image.** Servers boot from a prepared image with Docker, the worker and your test images, so they start in about a minute. Without an image they install Docker on first boot, which is slower. Build and refresh the image on a schedule:
+
+```bash
+chiperka-hub cloud build-image --provider hetzner --image registry.example.com/app:master-php
+```
+
+`contrib/cloud-image/gitlab-ci.yml` has ready-made scheduled jobs for both commands.
+
+**Trying it locally.** `CHIPERKA_CLOUD_DEV_DOCKER=hetzner` (with `CHIPERKA_CLOUD_DEV_HUB_URL=http://host.docker.internal:8080`) makes every "server" a worker container on your local Docker daemon. You can try the rules, the UI and the lifecycle without credentials. Development only.
 
 ## How it works
 
@@ -138,6 +188,7 @@ make docker  # build the Docker image
 | `internal/store` | SQLite persistence |
 | `internal/compile` | Test → job DAG compiler |
 | `internal/server` | HTTP API, SSE, queue monitor, reports |
+| `internal/cloud` | Cloud autoscaler: providers (Hetzner, AWS), SSH tunnels, settings, janitor, image builder |
 | `internal/model` | Test model shared with the CLI |
 | `web/` | Vue 3 + Vite + Tailwind UI, embedded into the binary |
 

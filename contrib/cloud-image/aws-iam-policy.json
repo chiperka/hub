@@ -1,0 +1,121 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Describe",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeSecurityGroupRules",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceTypes",
+        "ec2:DescribeImages",
+        "ec2:DescribeSpotPriceHistory"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CreateSecurityGroupTagged",
+      "Effect": "Allow",
+      "Action": "ec2:CreateSecurityGroup",
+      "Resource": "arn:aws:ec2:*:*:security-group/*",
+      "Condition": {"StringEquals": {"aws:RequestTag/chiperka-managed": "true"}}
+    },
+    {
+      "Sid": "CreateSecurityGroupInVpc",
+      "Effect": "Allow",
+      "Action": "ec2:CreateSecurityGroup",
+      "Resource": "arn:aws:ec2:*:*:vpc/*"
+    },
+    {
+      "Sid": "ManageOwnSecurityGroup",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupIngress"
+      ],
+      "Resource": "arn:aws:ec2:*:*:security-group/*",
+      "Condition": {"StringEquals": {"aws:ResourceTag/chiperka-managed": "true"}}
+    },
+    {
+      "Sid": "RunTaggedInstances",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:*:*:instance/*",
+        "arn:aws:ec2:*:*:volume/*"
+      ],
+      "Condition": {"StringEquals": {"aws:RequestTag/chiperka-managed": "true"}}
+    },
+    {
+      "Sid": "RunInstancesSupportingResources",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:*::image/*",
+        "arn:aws:ec2:*:*:image/*",
+        "arn:aws:ec2:*:*:subnet/*",
+        "arn:aws:ec2:*:*:network-interface/*",
+        "arn:aws:ec2:*:*:security-group/*",
+        "arn:aws:ec2:*:*:spot-instances-request/*"
+      ]
+    },
+    {
+      "Sid": "TagOnlyAsManaged",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "*",
+      "Condition": {"StringEquals": {"aws:RequestTag/chiperka-managed": "true"}}
+    },
+    {
+      "Sid": "StopTerminateManaged",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:TerminateInstances",
+        "ec2:StopInstances"
+      ],
+      "Resource": "arn:aws:ec2:*:*:instance/*",
+      "Condition": {"StringEquals": {"aws:ResourceTag/chiperka-managed": "true"}}
+    },
+    {
+      "Sid": "CreateImageFromManagedInstance",
+      "Effect": "Allow",
+      "Action": "ec2:CreateImage",
+      "Resource": "arn:aws:ec2:*:*:instance/*",
+      "Condition": {"StringEquals": {"aws:ResourceTag/chiperka-managed": "true"}}
+    },
+    {
+      "Sid": "CreateTaggedImage",
+      "Effect": "Allow",
+      "Action": "ec2:CreateImage",
+      "Resource": [
+        "arn:aws:ec2:*::image/*",
+        "arn:aws:ec2:*::snapshot/*"
+      ],
+      "Condition": {"StringEquals": {"aws:RequestTag/chiperka-managed": "true"}}
+    },
+    {
+      "Sid": "DeleteManagedImages",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DeregisterImage",
+        "ec2:DeleteSnapshot"
+      ],
+      "Resource": [
+        "arn:aws:ec2:*::image/*",
+        "arn:aws:ec2:*::snapshot/*"
+      ],
+      "Condition": {"StringEquals": {"aws:ResourceTag/chiperka-managed": "true"}}
+    },
+    {
+      "Sid": "SpotServiceLinkedRole",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "arn:aws:iam::*:role/aws-service-role/spot.amazonaws.com/AWSServiceRoleForEC2Spot",
+      "Condition": {"StringEquals": {"iam:AWSServiceName": "spot.amazonaws.com"}}
+    }
+  ]
+}
