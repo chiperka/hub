@@ -62,7 +62,8 @@ const statusLine = computed(() => {
 
 const budgetPct = computed(() => {
   const s = state.value
-  return s?.budget > 0 ? Math.min(100, Math.round((s.spend_month / s.budget) * 100)) : 0
+  // Spent plus the running servers' current hours: what the budget can no longer give out.
+  return s?.budget > 0 ? Math.min(100, Math.max(0, Math.round(((s.budget - s.budget_left) / s.budget) * 100))) : 0
 })
 
 async function setEnabled(enabled) {
@@ -219,6 +220,12 @@ const costMax = computed(() => Math.max(0.01, ...(costs.value?.daily || []).map(
             <span v-if="state.budget > 0" class="text-sm text-ink-400">of {{ money_(state.budget) }}</span>
           </div>
           <div v-if="state.price_unknown" class="mt-0.5 text-xs text-amber-300">without {{ state.price_unknown }} server{{ state.price_unknown > 1 ? 's' : '' }} of unknown price</div>
+          <div v-if="state.budget > 0" class="mt-0.5 text-xs text-ink-400" title="The budget minus the spend and the hour each running server is in. New servers start only while their first hour fits; running ones stop before an hour that does not.">
+            {{ money_(Math.max(0, state.budget_left)) }} left for new hours
+          </div>
+          <div v-for="(v, cur) in state.spend_other" :key="cur" class="mt-0.5 text-xs text-ink-400" title="Spent at the other provider, in its currency; not part of the budget.">
+            + {{ money(v, cur) }} at the other provider
+          </div>
           <div v-if="state.budget > 0" class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-ink-800">
             <div class="h-full rounded-full" :class="budgetPct >= 100 ? 'bg-red-400' : budgetPct > 80 ? 'bg-amber-400' : 'bg-emerald-400'" :style="{ width: budgetPct + '%' }" />
           </div>

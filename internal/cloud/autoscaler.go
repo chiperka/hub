@@ -76,6 +76,7 @@ type Autoscaler struct {
 	prepared     map[string]string // provider -> SSH CIDR it was prepared with
 	prices       map[string]priceEntry
 	lastState    string
+	budgetNote   string // last budget limit reported, so it is logged once
 	ctx          context.Context
 
 	startFails int // consecutive servers whose worker never signed in
@@ -216,16 +217,17 @@ func (a *Autoscaler) tick(ctx context.Context, now time.Time) {
 		}
 	}
 	keep := countKeep(active)
+	b := a.budgetLeft(ctx, st, now)
 	ids := map[string]bool{}
 	for i := range active {
 		ids[active[i].ID] = true
 		if a.provider(active[i].Provider) == nil {
 			continue // credentials gone: never mark it deleted while it may still run (see State)
 		}
-		a.advance(ctx, st, &active[i], workers[active[i].WorkerID], queue, &keep, now)
+		a.advance(ctx, st, &active[i], workers[active[i].WorkerID], queue, &keep, &b, now)
 	}
 	a.sweepTunnels(ids)
-	a.scale(ctx, st, queue, active, now)
+	a.scale(ctx, st, queue, active, &b, now)
 }
 
 // sweepTunnels stops tunnels of servers that are no longer active.
@@ -255,7 +257,7 @@ func (a *Autoscaler) workerMap(ctx context.Context) map[string]*store.Worker {
 // advance moves one server through its lifecycle.
 // Every update checks that the row is still in the state this tick saw: a
 // manual stop or a finished deletion in between must not be overwritten.
-func (a *Autoscaler) advance(ctx context.Context, st Settings, s *store.CloudServer, w *store.Worker, queue int, keep *int, now time.Time) {
+func (a *Autoscaler) advance(ctx context.Context, st Settings, s *store.CloudServer, w *store.Worker, queue int, keep *int, b *budget, now time.Time) {
 	ms := now.UnixMilli()
 	if s.Status != store.CloudRequested {
 		a.ensureTunnel(s)
@@ -339,6 +341,15 @@ func (a *Autoscaler) advance(ctx context.Context, st Settings, s *store.CloudSer
 		if s.ProviderCreatedAt > 0 && ms-s.ProviderCreatedAt > int64(st.MaxLifetimeSec)*1000 {
 			a.drain(ctx, s.ID, fmt.Sprintf("maximum lifetime of %s reached", secs(st.MaxLifetimeSec)))
 			return
+		}
+		// Shortly before its hour ends, a server needs the next hour from the
+		// budget. Without room it goes now, before that hour is billed.
+		if b.on && sameCurrency(s.Currency, b.cur) && s.ProviderCreatedAt > 0 && s.HourlyPrice > 0 {
+			hour := int64(time.Hour / time.Millisecond)
+			if (ms-s.ProviderCreatedAt)%hour >= hour-budgetStopBefore(st) && !b.take(s.HourlyPrice) {
+				a.drain(ctx, s.ID, fmt.Sprintf("monthly budget of %.2f %s: another hour does not fit", st.MonthlyBudget, b.cur))
+				return
+			}
 		}
 		if s.IdleSince > 0 {
 			if stop, why := shouldStopIdle(st, s, *keep, now); stop && a.drain(ctx, s.ID, why) {
@@ -430,7 +441,7 @@ const (
 	StatusBackoff       = "backoff"
 )
 
-func (a *Autoscaler) scale(ctx context.Context, st Settings, queue int, active []store.CloudServer, now time.Time) {
+func (a *Autoscaler) scale(ctx context.Context, st Settings, queue int, active []store.CloudServer, b *budget, now time.Time) {
 	state := a.computeState(ctx, st, now)
 	a.mu.Lock()
 	changed := state != a.lastState
@@ -487,6 +498,24 @@ func (a *Autoscaler) scale(ctx context.Context, st Settings, queue int, active [
 	if n <= 0 {
 		return
 	}
+	est := 0.0
+	if b.on {
+		price, err := a.newServerPrice(ctx, st)
+		if err != nil {
+			a.noteBudget(ctx, "price", fmt.Sprintf("the price of a new server is unknown (%v), so the monthly budget cannot be checked: no new servers", err))
+			return
+		}
+		if fit := b.room(price); n > fit {
+			a.noteBudget(ctx, fmt.Sprintf("room:%d", fit), fmt.Sprintf("monthly budget: %.2f %s left after the running servers' current hours, room for %d more server(s) at %.4f %s/h instead of %d",
+				max(b.left, 0), b.cur, fit, price, b.cur, n))
+			n = fit
+		}
+		if n <= 0 {
+			return
+		}
+		est = price
+	}
+	a.noteBudget(ctx, "", "")
 	reason := fmt.Sprintf("started for a queue of %d tests", queue)
 	msg := fmt.Sprintf("queue %d tests → %d server(s) wanted, %d running; starting %d× %s", queue, target, counted, n, ps.Types[0])
 	if want < warm {
@@ -495,7 +524,7 @@ func (a *Autoscaler) scale(ctx context.Context, st Settings, queue int, active [
 	}
 	a.event(ctx, "", "decision", msg, nil)
 	for i := 0; i < n; i++ {
-		a.request(ctx, st, reason, false)
+		a.request(ctx, st, reason, false, est)
 	}
 }
 
@@ -506,7 +535,7 @@ func (a *Autoscaler) computeState(ctx context.Context, st Settings, now time.Tim
 	if !st.Enabled {
 		return StatusPaused
 	}
-	if st.MonthlyBudget > 0 && a.MonthSpend(ctx, now) >= st.MonthlyBudget {
+	if st.MonthlyBudget > 0 && a.budgetLeft(ctx, st, now).left <= 0 {
 		return StatusBudget
 	}
 	if st.MonthlyBudget > 0 && len(a.unknownPrices(ctx, now)) > 0 {
@@ -520,11 +549,13 @@ func (a *Autoscaler) computeState(ctx context.Context, st Settings, now time.Tim
 	return StatusRunning
 }
 
-// request records a new server and starts creating it.
-func (a *Autoscaler) request(ctx context.Context, st Settings, reason string, manual bool) (*store.CloudServer, error) {
+// request records a new server and starts creating it. est is its expected
+// hourly price: it holds the server's first hour in the budget until the
+// provider says which type it got.
+func (a *Autoscaler) request(ctx context.Context, st Settings, reason string, manual bool, est float64) (*store.CloudServer, error) {
 	s := &store.CloudServer{
 		ID: "ci-" + randHex(4), Provider: st.Provider, Status: store.CloudRequested, Reason: reason,
-		Manual: manual, CreatedAt: store.Now(), Currency: a.currency(st),
+		Manual: manual, CreatedAt: store.Now(), Currency: a.currency(st), HourlyPrice: est,
 	}
 	if err := a.store.InsertCloudServer(ctx, s); err != nil {
 		return nil, err
@@ -1058,17 +1089,28 @@ func (a *Autoscaler) Launch(ctx context.Context, n int) ([]store.CloudServer, er
 	if total+n > st.Active().MaxServers {
 		return nil, fmt.Errorf("that would exceed the maximum of %d servers (%d running)", st.Active().MaxServers, total)
 	}
-	if st.MonthlyBudget > 0 && a.MonthSpend(ctx, time.Now()) >= st.MonthlyBudget {
-		return nil, fmt.Errorf("the monthly budget is used up")
-	}
+	est := 0.0
 	if st.MonthlyBudget > 0 {
 		if ids := a.unknownPrices(ctx, time.Now()); len(ids) > 0 {
 			return nil, fmt.Errorf("the price of %s is unknown, so the monthly budget cannot be checked", strings.Join(ids, ", "))
 		}
+		b := a.budgetLeft(ctx, st, time.Now())
+		if b.left <= 0 {
+			return nil, fmt.Errorf("the monthly budget is used up")
+		}
+		price, err := a.newServerPrice(ctx, st)
+		if err != nil {
+			return nil, fmt.Errorf("the price of a new server is unknown (%v), so the monthly budget cannot be checked", err)
+		}
+		if fit := b.room(price); n > fit {
+			return nil, fmt.Errorf("the monthly budget leaves room for %d more server(s) (%.2f %s left after the running servers' current hours, %.4f %s/h each)",
+				fit, b.left, b.cur, price, b.cur)
+		}
+		est = price
 	}
 	out := []store.CloudServer{}
 	for i := 0; i < n; i++ {
-		s, err := a.request(ctx, st, "started manually", true)
+		s, err := a.request(ctx, st, "started manually", true, est)
 		if err != nil {
 			return out, err
 		}
@@ -1396,26 +1438,143 @@ func costBetween(s *store.CloudServer, from, to, now int64) float64 {
 
 // SpendBetween estimates the spend over all providers in [from, to).
 func (a *Autoscaler) SpendBetween(ctx context.Context, from, to time.Time) float64 {
-	return a.spend(ctx, from.UnixMilli(), to.UnixMilli())
+	return a.spend(ctx, from.UnixMilli(), to.UnixMilli(), "")
 }
 
-// MonthSpend estimates this calendar month's spend over all providers.
-func (a *Autoscaler) MonthSpend(ctx context.Context, now time.Time) float64 {
+// MonthSpend estimates this calendar month's spend in one currency.
+func (a *Autoscaler) MonthSpend(ctx context.Context, now time.Time, cur string) float64 {
 	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).UnixMilli()
-	return a.spend(ctx, from, now.UnixMilli())
+	return a.spend(ctx, from, now.UnixMilli(), cur)
 }
 
-func (a *Autoscaler) spend(ctx context.Context, from, to int64) float64 {
+// spend sums the cost in [from, to) of the servers billed in cur ("" = all,
+// which mixes currencies when both providers were used).
+func (a *Autoscaler) spend(ctx context.Context, from, to int64, cur string) float64 {
 	servers, err := a.store.ListCloudServersBetween(ctx, from, to)
 	if err != nil {
 		return 0
 	}
 	sum := 0.0
-	now := store.Now()
+	// Costs as of the end of the range: a clock read a moment after the
+	// caller's "now" would leave part of a just-created server's hour outside it.
+	now := min(store.Now(), to)
 	for i := range servers {
-		sum += costBetween(&servers[i], from, to, now)
+		if cur == "" || sameCurrency(servers[i].Currency, cur) {
+			sum += costBetween(&servers[i], from, to, now)
+		}
 	}
 	return sum
+}
+
+// sameCurrency treats a server without a recorded currency as billed in any.
+func sameCurrency(server, cur string) bool { return server == "" || server == cur }
+
+// ── budget ──────────────────────────────────────────────────────────────────
+
+// budget is what is left of the monthly budget in its currency.
+type budget struct {
+	on   bool // a budget is set
+	cur  string
+	left float64
+}
+
+// take reserves one hour at price, if it fits.
+func (b *budget) take(price float64) bool {
+	if !b.on {
+		return true
+	}
+	if price > b.left+1e-9 {
+		return false
+	}
+	b.left -= price
+	return true
+}
+
+// room is how many new servers fit for their first hour at price.
+func (b *budget) room(price float64) int {
+	if b.left <= 0 || price <= 0 {
+		return 0
+	}
+	return int(math.Floor(b.left/price + 1e-9))
+}
+
+// budgetLeft is the monthly budget minus this month's spend and minus what
+// the running servers cost until the hour they are in is over. Hetzner bills
+// started hours; AWS servers are held to the same hour, so the budget holds
+// however many servers run at once.
+func (a *Autoscaler) budgetLeft(ctx context.Context, st Settings, now time.Time) budget {
+	if st.MonthlyBudget <= 0 {
+		return budget{}
+	}
+	cur := a.currency(st)
+	b := budget{on: true, cur: cur, left: st.MonthlyBudget - a.MonthSpend(ctx, now, cur)}
+	ms := now.UnixMilli()
+	servers, _ := a.store.ListCloudServers(ctx, ms)
+	for i := range servers {
+		if s := &servers[i]; s.Active() && sameCurrency(s.Currency, cur) {
+			b.left -= hourCost(s, ms) - ServerCost(s, ms)
+		}
+	}
+	return b
+}
+
+// hourCost is what a server will have cost when the hour it is in is over.
+// A server still being created holds its first hour at the expected price.
+func hourCost(s *store.CloudServer, now int64) float64 {
+	if s.ProviderCreatedAt == 0 {
+		return s.HourlyPrice
+	}
+	hours := float64(now-s.ProviderCreatedAt) / float64(time.Hour/time.Millisecond)
+	return math.Max(1, math.Ceil(hours)) * s.HourlyPrice
+}
+
+// budgetStopBefore is how long before the end of its hour a server must
+// either get the next hour from the budget or start shutting down, so its
+// tests can finish before that hour is billed.
+func budgetStopBefore(st Settings) int64 {
+	d := secs(st.HetznerHourReserveSec + st.DrainTimeoutSec)
+	return int64(min(d, 30*time.Minute) / time.Millisecond)
+}
+
+// newServerPrice is the hourly price a new server is held with: the highest
+// of the configured types and locations, as any of them may be the one that
+// starts. Spot servers that may fall back to on-demand count as on-demand.
+func (a *Autoscaler) newServerPrice(ctx context.Context, st Settings) (float64, error) {
+	p := a.provider(st.Provider)
+	if p == nil {
+		return 0, ErrNotConfigured
+	}
+	ps := st.Active()
+	spot := st.AWSSpot && !st.AWSSpotToOnDemand && p.Name() == "aws"
+	best, lastErr := 0.0, error(nil)
+	for _, typ := range ps.Types {
+		for _, loc := range ps.Locations {
+			v, err := a.price(ctx, p, typ, loc, spot)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			best = max(best, v)
+		}
+	}
+	if best > 0 {
+		return best, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no server type configured")
+	}
+	return 0, lastErr
+}
+
+// noteBudget logs a budget limit once until it changes; key "" clears it.
+func (a *Autoscaler) noteBudget(ctx context.Context, key, msg string) {
+	a.mu.Lock()
+	same := a.budgetNote == key
+	a.budgetNote = key
+	a.mu.Unlock()
+	if !same && key != "" {
+		a.event(ctx, "", "decision", msg, nil)
+	}
 }
 
 // DailyCost is spend per day for the cost history.
@@ -1471,6 +1630,10 @@ type State struct {
 	MaxServers    int             `json:"max_servers"`
 	SpendToday    float64         `json:"spend_today"`
 	SpendMonth    float64         `json:"spend_month"`
+	// SpendOther is this month's spend in other currencies (the other provider), not part of the budget.
+	SpendOther map[string]float64 `json:"spend_other,omitempty"`
+	// BudgetLeft is the budget minus the spend and the running servers' current hours.
+	BudgetLeft float64 `json:"budget_left"`
 	// PriceUnknown counts this month's servers whose price is unknown: the spend leaves them out.
 	PriceUnknown int     `json:"price_unknown"`
 	Budget       float64 `json:"budget"`
@@ -1509,13 +1672,23 @@ func (a *Autoscaler) State(ctx context.Context) State {
 		}
 	}
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	s.SpendToday = a.spend(ctx, today.UnixMilli(), now.UnixMilli())
-	s.SpendMonth = a.MonthSpend(ctx, now)
+	s.SpendToday = a.spend(ctx, today.UnixMilli(), now.UnixMilli(), s.Currency)
+	s.SpendMonth = a.MonthSpend(ctx, now, s.Currency)
+	if st.MonthlyBudget > 0 {
+		s.BudgetLeft = a.budgetLeft(ctx, st, now).left
+	}
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).UnixMilli()
 	if month, err := a.store.ListCloudServersBetween(ctx, monthStart, now.UnixMilli()); err == nil {
-		for _, sv := range month {
+		for i := range month {
+			sv := &month[i]
 			if sv.PriceUnknown {
 				s.PriceUnknown++
+			}
+			if !sameCurrency(sv.Currency, s.Currency) {
+				if s.SpendOther == nil {
+					s.SpendOther = map[string]float64{}
+				}
+				s.SpendOther[sv.Currency] += costBetween(sv, monthStart, now.UnixMilli(), now.UnixMilli())
 			}
 		}
 	}
