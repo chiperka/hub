@@ -179,7 +179,7 @@ const dayNames = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']
           <div>
             <label class="label">Monthly budget ({{ currency }})</label>
             <input v-model="form.monthly_budget" type="number" min="0" step="1" class="input" />
-            <p class="mt-1 text-xs text-ink-500">When the estimated spend reaches it, no new servers start. 0 = no limit.</p>
+            <p class="mt-1 text-xs text-ink-500">In the provider's currency. A server starts only if its first hour fits, and a running server stops before an hour that does not, so the server cap can be high without risk. 0 = no limit.</p>
           </div>
           <div class="sm:col-span-2">
             <label class="label">Provider credentials</label>

@@ -137,7 +137,7 @@ Everything else is set in the UI under **Cloud → Settings**, at runtime: the p
 - The hub deletes servers after idle time and after a maximum lifetime.
 - It deletes servers whose worker never signs in.
 - Every minute it reconciles with the provider and deletes managed servers it has no record of.
-- It enforces a monthly budget.
+- It enforces a monthly budget, in the selected provider's currency. A new server starts only if its first hour (at the price of the dearest configured type) still fits. A running server needs its next hour from the budget about 15 minutes before its hour ends (the Hetzner reserve plus the time running tests get to finish); without room it shuts down before that hour is billed. So even a cap of 50 servers cannot spend more than the budget.
 - Every server powers itself off after 5 hours. AWS then terminates it.
 - `chiperka-hub cloud janitor` deletes servers older than 5 hours even when the hub is down. Run it on a schedule.
 
@@ -151,7 +151,7 @@ chiperka-hub cloud build-image --provider hetzner --image registry.example.com/a
 
 On AWS the image's disk (`--disk-gb`, 30 GB by default) is the minimum disk of servers started from it: a smaller disk size in the settings is raised to it. Pass `--type` and `--location` when the default builder (`c7a.large` in `eu-central-1a`) is not available in your region or plan.
 
-**Prices.** The hub asks the provider: Hetzner's API, the AWS Price List API for on-demand servers (`pricing:GetProducts`, part of the IAM policy) and EC2 for spot. When it cannot find out a server's price, it says "price unknown" instead of guessing, leaves the server out of the spend and asks again every minute. While such a server runs and a monthly budget is set, no new servers start, because the budget cannot be checked.
+**Prices.** The hub asks the provider: Hetzner's API, the AWS Price List API for on-demand servers (`pricing:GetProducts`, part of the IAM policy) and EC2 for spot. When it cannot find out a server's price, it says "price unknown" instead of guessing, leaves the server out of the spend and asks again every minute. While such a server runs and a monthly budget is set, no new servers start, because the budget cannot be checked. The same goes for a new server whose price the provider cannot tell.
 
 **Trying it locally.** `CHIPERKA_CLOUD_DEV_DOCKER=hetzner` (with `CHIPERKA_CLOUD_DEV_HUB_URL=http://host.docker.internal:8080`) makes every "server" a worker container on your local Docker daemon. You can try the rules, the UI and the lifecycle without credentials. Development only.
 

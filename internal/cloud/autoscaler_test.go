@@ -491,8 +491,19 @@ func TestUnknownPriceStopsNewServersUnderBudget(t *testing.T) {
 	e.p.priceErr = fmt.Errorf("price list unavailable")
 	e.p.mu.Unlock()
 
+	// Under a budget, a server whose price is unknown does not start at all.
 	e.queue = 100
 	e.tick(time.Now())
+	if n := e.p.count(); n != 0 {
+		t.Fatalf("unknown price under a budget, yet %d servers", n)
+	}
+	// Started without a budget, then a budget is set: servers of unknown price are running.
+	st := e.a.Settings()
+	st.MonthlyBudget = 0
+	e.a.SaveSettings(ctx, st, "test", "")
+	e.tick(time.Now())
+	st.MonthlyBudget = 50
+	e.a.SaveSettings(ctx, st, "test", "")
 	if n := e.p.count(); n != 2 {
 		t.Fatalf("want 2 servers, got %d", n)
 	}
@@ -526,6 +537,82 @@ func TestUnknownPriceStopsNewServersUnderBudget(t *testing.T) {
 	if st := e.a.State(ctx); st.Status != StatusRunning || st.PriceUnknown != 0 {
 		t.Fatalf("state after the price came %+v", st)
 	}
+}
+
+func TestBudgetHoldsFirstHourOfNewServers(t *testing.T) {
+	// 0.5 left, 0.2/h: only two servers fit, though the rules want four.
+	e := newEnv(t, func(s *Settings) { s.MonthlyBudget = 0.5 })
+	ctx := context.Background()
+	e.queue = 1135
+	e.tick(time.Now())
+	if n := e.p.count(); n != 2 {
+		t.Fatalf("want 2 servers within the budget, got %d", n)
+	}
+	e.tick(time.Now())
+	if n := e.p.count(); n != 2 {
+		t.Fatalf("budget room counted twice: %d servers", n)
+	}
+	if st := e.a.State(ctx); st.BudgetLeft < 0.09 || st.BudgetLeft > 0.11 {
+		t.Fatalf("budget left %v, want 0.1", st.BudgetLeft)
+	}
+	if _, err := e.a.Launch(ctx, 1); err == nil || !strings.Contains(err.Error(), "room for 0") {
+		t.Fatalf("manual launch must respect the budget, got %v", err)
+	}
+}
+
+func TestBudgetStopsServersBeforeTheNextHour(t *testing.T) {
+	// Two servers, 0.4 spent: 0.65 leaves one more hour for one of them.
+	e := newEnv(t, func(s *Settings) { s.MonthlyBudget = 0.65; s.HetznerHoldHour = false })
+	e.queue = 100
+	e.tick(time.Now())
+	online(e)
+	e.tick(time.Now())
+	if n := len(e.active()); n != 2 {
+		t.Fatalf("want 2 servers, got %d", n)
+	}
+	// 20 minutes into the hour nothing happens; 50 minutes in, the next hour is due.
+	e.setAll(func(c *store.CloudServer) { c.ProviderCreatedAt = store.Now() - 20*60_000 })
+	e.tick(time.Now())
+	if n := countStatus(e, store.CloudDraining); n != 0 {
+		t.Fatalf("%d servers stopped mid-hour", n)
+	}
+	e.setAll(func(c *store.CloudServer) { c.ProviderCreatedAt = store.Now() - 50*60_000 })
+	e.tick(time.Now())
+	if n := countStatus(e, store.CloudDraining); n != 1 {
+		t.Fatalf("want 1 server stopped for the budget, got %d", n)
+	}
+	for _, s := range e.servers() {
+		if s.Status == store.CloudDraining && !strings.Contains(s.EndReason, "monthly budget") {
+			t.Fatalf("end reason %q", s.EndReason)
+		}
+	}
+}
+
+func TestBudgetIgnoresOtherCurrency(t *testing.T) {
+	e := newEnv(t, func(s *Settings) { s.MonthlyBudget = 1 })
+	ctx := context.Background()
+	aws := &store.CloudServer{ID: "ci-aws", Provider: "aws", Status: store.CloudDeleted, HourlyPrice: 3, Currency: "USD",
+		CreatedAt: store.Now() - 3_600_000, ProviderCreatedAt: store.Now() - 3_600_000, DeletedAt: store.Now() - 1000}
+	e.st.SaveCloudServer(ctx, aws)
+	e.queue = 100
+	e.tick(time.Now())
+	if n := e.p.count(); n != 2 {
+		t.Fatalf("dollars spent on AWS must not use up a euro budget: %d servers", n)
+	}
+	st := e.a.State(ctx)
+	if st.SpendMonth > 0.41 || st.SpendOther["USD"] < 2.9 {
+		t.Fatalf("spend %v, other %v", st.SpendMonth, st.SpendOther)
+	}
+}
+
+func countStatus(e *env, status string) int {
+	n := 0
+	for _, s := range e.servers() {
+		if s.Status == status {
+			n++
+		}
+	}
+	return n
 }
 
 func TestUnknownPriceWithoutBudget(t *testing.T) {
